@@ -1,0 +1,26 @@
+# 方針・調査ドキュメントはコミット対象外
+docs/
+
+# Claude 関連ファイルはコミット対象外
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.claude.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# JAX / 実験成果物
+*.npz
+*.ckpt
+wandb/
+
+# OS / エディタ
+.DS_Store
+.idea/
+.vscode/
