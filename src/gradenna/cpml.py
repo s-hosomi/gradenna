@@ -76,10 +76,11 @@ def axis_coefficients(
     identically zero and the update reduces exactly to the plain Yee scheme.
     """
     npml = spec.thickness
+    float_dtype = dtype if dtype is not None else jnp.result_type(float)
     if half:
-        pos = jnp.arange(n - 1, dtype=dtype) + 0.5
+        pos = jnp.arange(n - 1, dtype=float_dtype) + 0.5
     else:
-        pos = jnp.arange(n, dtype=dtype)
+        pos = jnp.arange(n, dtype=float_dtype)
 
     if npml == 0:
         zeros = jnp.zeros_like(pos)

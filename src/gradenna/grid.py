@@ -23,6 +23,12 @@ class Grid2D:
     dy: float
     courant: float = 0.99  # fraction of the 2D stability limit
 
+    def __post_init__(self) -> None:
+        if self.nx < 3 or self.ny < 3:
+            raise ValueError(f"grid must be at least 3x3, got {self.nx}x{self.ny}")
+        if self.dx <= 0.0 or self.dy <= 0.0 or self.courant <= 0.0:
+            raise ValueError("dx, dy and courant must be positive")
+
     @property
     def dt(self) -> float:
         """Time step Δt = S / (c √(1/Δx² + 1/Δy²)) with S = courant."""

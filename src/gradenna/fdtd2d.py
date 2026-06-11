@@ -3,7 +3,7 @@
 Non-zero field components: Ez(i, j), Hx(i, j+1/2), Hy(i+1/2, j).
 The whole time loop is a single `jax.lax.scan`, so any scalar loss of the
 outputs can be differentiated with `jax.grad` with respect to the material
-arrays (eps_r, sigma) and the source current.
+arrays (eps_r, sigma) and the source currents.
 
 Update scheme (Schneider, *Understanding the FDTD Method*, Ch. 8/11):
 
@@ -22,6 +22,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from gradenna.constants import EPS0, MU0
 from gradenna.cpml import CPMLSpec, axis_coefficients
@@ -29,16 +30,28 @@ from gradenna.grid import Grid2D
 
 
 class SimResult(NamedTuple):
-    """Time series recorded during a simulation.
+    """Time series and final fields of a simulation.
 
     probe_ez: (n_steps, n_probes) Ez at the probe points; row n is time (n+1) dt.
-    energy:   (n_steps,) total field energy [J/m] (per unit z length).
-    ez_final: (nx, ny) final Ez snapshot.
+    energy:   (n_steps,) total field energy [J/m], or None unless requested.
+    ez, hx, hy: final field snapshots.
     """
 
     probe_ez: jnp.ndarray
-    energy: jnp.ndarray
-    ez_final: jnp.ndarray
+    energy: jnp.ndarray | None
+    ez: jnp.ndarray
+    hx: jnp.ndarray
+    hy: jnp.ndarray
+
+
+class _State(NamedTuple):
+    ez: jnp.ndarray
+    hx: jnp.ndarray
+    hy: jnp.ndarray
+    p_ezx: jnp.ndarray
+    p_ezy: jnp.ndarray
+    p_hyx: jnp.ndarray
+    p_hxy: jnp.ndarray
 
 
 def field_energy(ez, hx, hy, eps, grid: Grid2D):
@@ -53,33 +66,62 @@ def field_energy(ez, hx, hy, eps, grid: Grid2D):
     return ue + uh
 
 
+def _as_index_array(ij, name: str, grid: Grid2D, margin: int) -> np.ndarray:
+    idx = np.asarray(ij, dtype=np.int32).reshape(-1, 2)
+    lo = np.array([margin, margin])
+    hi = np.array([grid.nx - 1 - margin, grid.ny - 1 - margin])
+    if idx.size and (np.any(idx < lo) or np.any(idx > hi)):
+        raise ValueError(f"{name} {idx.tolist()} outside the interior (PML margin {margin})")
+    return idx
+
+
 def simulate_tm(
     grid: Grid2D,
     *,
-    source_ij: tuple[int, int],
+    source_ij,
     source_current,
     eps_r=1.0,
     sigma=0.0,
-    probe_ij: tuple = (),
+    probe_ij=(),
     cpml: CPMLSpec = CPMLSpec(),
+    record_energy: bool = False,
 ) -> SimResult:
     """Run a 2D TM FDTD simulation.
 
     Args:
         grid: the Yee grid.
-        source_ij: (i, j) Ez cell of the line-current source.
-        source_current: (n_steps,) current I(t) [A] sampled at t = (n+1/2) dt.
+        source_ij: line-current Ez cell(s) — a single (i, j) pair or an
+            (n_sources, 2) array.
+        source_current: currents I(t) [A] sampled at t = (n+1/2) dt; shape
+            (n_steps,) for a single source or (n_steps, n_sources).
         eps_r: relative permittivity at Ez points — scalar or (nx, ny).
         sigma: electric conductivity [S/m] at Ez points — scalar or (nx, ny).
-        probe_ij: tuple of (i, j) Ez points to record.
+        probe_ij: Ez points to record — sequence of (i, j) or (n_probes, 2).
         cpml: CPML parameters; thickness 0 gives a plain PEC box.
+        record_energy: also record the total field energy at every step
+            (adds full-grid reductions; off by default).
 
     Differentiable in eps_r, sigma and source_current.
     """
     nx, ny = grid.nx, grid.ny
+    if min(nx, ny) <= 2 * cpml.thickness + 2:
+        raise ValueError(f"grid {nx}x{ny} is too small for CPML thickness {cpml.thickness}")
     dt = grid.dt
+
+    src_idx = _as_index_array(source_ij, "source_ij", grid, margin=1)
+    probe_idx = _as_index_array(probe_ij, "probe_ij", grid, margin=0)
+
     source_current = jnp.asarray(source_current)
-    dtype = jnp.result_type(source_current.dtype, jnp.zeros(0).dtype)
+    if source_current.ndim == 1:
+        source_current = source_current[:, None]
+    if source_current.shape[1] != src_idx.shape[0]:
+        raise ValueError(
+            f"source_current has {source_current.shape[1]} columns "
+            f"for {src_idx.shape[0]} sources"
+        )
+
+    dtype = jnp.result_type(source_current, eps_r, sigma)
+    source_current = source_current.astype(dtype)
 
     eps = EPS0 * jnp.broadcast_to(jnp.asarray(eps_r, dtype), (nx, ny))
     sig = jnp.broadcast_to(jnp.asarray(sigma, dtype), (nx, ny))
@@ -95,12 +137,10 @@ def simulate_tm(
 
     inv_dx, inv_dy = 1.0 / grid.dx, 1.0 / grid.dy
     dt_mu = dt / MU0
-    si, sj = source_ij
     # Discretized line current: Jz = I / (dx dy) over one cell.
-    j_scale = inv_dx * inv_dy
-    probes = tuple(probe_ij)
+    cb_src = cb[src_idx[:, 0], src_idx[:, 1]] * (inv_dx * inv_dy)
 
-    def step(state, i_n):
+    def step(state: _State, i_n):
         ez, hx, hy, p_ezx, p_ezy, p_hyx, p_hxy = state
 
         dez_dy = (ez[:, 1:] - ez[:, :-1]) * inv_dy  # (nx, ny-1) at Hx points
@@ -122,20 +162,23 @@ def simulate_tm(
             - p_ezy
         )
         ez = ez.at[1:-1, 1:-1].set(ca[1:-1, 1:-1] * ez[1:-1, 1:-1] + cb[1:-1, 1:-1] * curl)
-        ez = ez.at[si, sj].add(-cb[si, sj] * i_n * j_scale)
+        ez = ez.at[src_idx[:, 0], src_idx[:, 1]].add(-cb_src * i_n)
 
-        state = (ez, hx, hy, p_ezx, p_ezy, p_hyx, p_hxy)
-        probe_vals = jnp.stack([ez[i, j] for (i, j) in probes]) if probes else jnp.zeros((0,), dtype)
-        return state, (probe_vals, field_energy(ez, hx, hy, eps, grid))
+        state = _State(ez, hx, hy, p_ezx, p_ezy, p_hyx, p_hxy)
+        probe_vals = ez[probe_idx[:, 0], probe_idx[:, 1]]
+        if record_energy:
+            return state, (probe_vals, field_energy(ez, hx, hy, eps, grid))
+        return state, probe_vals
 
-    state0 = (
-        jnp.zeros((nx, ny), dtype),
-        jnp.zeros((nx, ny - 1), dtype),
-        jnp.zeros((nx - 1, ny), dtype),
-        jnp.zeros((nx - 2, ny - 2), dtype),
-        jnp.zeros((nx - 2, ny - 2), dtype),
-        jnp.zeros((nx - 1, ny), dtype),
-        jnp.zeros((nx, ny - 1), dtype),
+    state0 = _State(
+        ez=jnp.zeros((nx, ny), dtype),
+        hx=jnp.zeros((nx, ny - 1), dtype),
+        hy=jnp.zeros((nx - 1, ny), dtype),
+        p_ezx=jnp.zeros((nx - 2, ny - 2), dtype),
+        p_ezy=jnp.zeros((nx - 2, ny - 2), dtype),
+        p_hyx=jnp.zeros((nx - 1, ny), dtype),
+        p_hxy=jnp.zeros((nx, ny - 1), dtype),
     )
-    final_state, (probe_ez, energy) = jax.lax.scan(step, state0, source_current)
-    return SimResult(probe_ez=probe_ez, energy=energy, ez_final=final_state[0])
+    final, outputs = jax.lax.scan(step, state0, source_current)
+    probe_ez, energy = outputs if record_energy else (outputs, None)
+    return SimResult(probe_ez=probe_ez, energy=energy, ez=final.ez, hx=final.hx, hy=final.hy)

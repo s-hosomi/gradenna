@@ -13,7 +13,7 @@ def _run(courant: float, n_steps: int):
     t = (jnp.arange(n_steps) + 0.5) * grid.dt
     current = gaussian_derivative(t, t0=6 * tau, tau=tau)
     return simulate_tm(
-        grid, source_ij=(30, 30), source_current=current, cpml=PEC_BOX
+        grid, source_ij=(30, 30), source_current=current, cpml=PEC_BOX, record_energy=True
     )
 
 

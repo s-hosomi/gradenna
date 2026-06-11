@@ -28,7 +28,14 @@ def _record(n: int, n_steps: int, cpml: CPMLSpec, src_offset, probe_offset):
     probe = (c + probe_offset[0], c + probe_offset[1])
     t = (jnp.arange(n_steps) + 0.5) * grid.dt
     current = gaussian_derivative(t, t0=6 * float(TAU), tau=float(TAU))
-    res = simulate_tm(grid, source_ij=src, source_current=current, probe_ij=(probe,), cpml=cpml)
+    res = simulate_tm(
+        grid,
+        source_ij=src,
+        source_current=current,
+        probe_ij=(probe,),
+        cpml=cpml,
+        record_energy=True,
+    )
     return res.probe_ez[:, 0], res
 
 
@@ -65,11 +72,12 @@ def test_zero_thickness_is_plain_yee():
     assert float(jnp.abs(coeffs.inv_kappa - 1.0).max()) == 0.0
 
 
-def test_degenerate_matched_loss_layer():
+@pytest.mark.parametrize("half", [False, True])
+def test_degenerate_matched_loss_layer(half):
     """kappa_max=1, alpha_max=0 reduces s_w to 1 + sigma/(j w eps0):
     b = exp(-sigma dt/eps0) and c = b - 1 exactly."""
     spec = CPMLSpec(thickness=8, kappa_max=1.0, alpha_max=0.0)
-    co = axis_coefficients(40, DX, 3e-12, spec, half=False)
+    co = axis_coefficients(40, DX, 3e-12, spec, half=half)
     inside = co.c != 0.0
     assert bool(jnp.all(jnp.isclose(co.c[inside], co.b[inside] - 1.0)))
     assert float(jnp.abs(co.inv_kappa - 1.0).max()) == 0.0
