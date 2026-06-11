@@ -1,0 +1,33 @@
+[project]
+name = "gradenna"
+version = "0.0.1"
+description = "Differentiable FDTD antenna inverse design in JAX"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Shunsuke Hosomi" }]
+dependencies = [
+    "jax>=0.4.35",
+    "numpy>=1.26",
+    "scipy>=1.11",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "matplotlib>=3.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gradenna"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "slow: long-running convergence and strict-tolerance tests (deselect with -m 'not slow')",
+]
