@@ -17,6 +17,15 @@ from gradenna.fdtd3d import (
     time_series_dft,
 )
 from gradenna.grid import Grid2D
+from gradenna.ntff import (
+    directivity_2d,
+    directivity_3d,
+    gain,
+    ntff_2d,
+    ntff_3d,
+    radiated_power_2d,
+    radiated_power_3d,
+)
 from gradenna.sources import gaussian, gaussian_derivative, modulated_gaussian
 from gradenna.sparams import (
     BandPulse,
@@ -54,8 +63,11 @@ __all__ = [
     "beta_schedule",
     "conic_filter",
     "connected_to_seed",
+    "directivity_2d",
+    "directivity_3d",
     "field_energy",
     "field_energy_3d",
+    "gain",
     "gaussian",
     "gaussian_derivative",
     "gaussian_pulse_for_band",
@@ -64,9 +76,13 @@ __all__ = [
     "incident_voltage",
     "minimum_feature_size",
     "modulated_gaussian",
+    "ntff_2d",
+    "ntff_3d",
     "optimize",
     "port_dft",
     "port_impedance",
+    "radiated_power_2d",
+    "radiated_power_3d",
     "s11_power_wave",
     "simulate_3d",
     "simulate_tm",
