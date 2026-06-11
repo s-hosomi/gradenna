@@ -25,3 +25,6 @@ wandb/
 .idea/
 .vscode/
 *.png
+*.gbr
+*.svg
+fab_output/

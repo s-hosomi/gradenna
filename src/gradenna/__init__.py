@@ -7,6 +7,7 @@ Submodules with optional heavy dependencies are not imported here:
 
 from gradenna.constants import C0, EPS0, ETA0, MU0
 from gradenna.cpml import CPMLSpec, alpha_max_for_fmin
+from gradenna.designs import patch_design
 from gradenna.fdtd2d import Port, SimResult, field_energy, simulate_tm
 from gradenna.fdtd3d import (
     Grid3D,
@@ -79,6 +80,7 @@ __all__ = [
     "ntff_2d",
     "ntff_3d",
     "optimize",
+    "patch_design",
     "port_dft",
     "port_impedance",
     "radiated_power_2d",
