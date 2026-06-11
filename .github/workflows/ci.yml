@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 18 * * *" # nightly (03:00 JST): runs the slow tier too
+  workflow_dispatch:
+
+env:
+  JAX_PLATFORMS: cpu
+  JAX_ENABLE_X64: "1"
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked
+      - name: Fast tests (T1)
+        run: uv run pytest -m "not slow" -q
+      - name: Convergence tests (T2, nightly only)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: uv run pytest -m "slow" -q
