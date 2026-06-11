@@ -10,12 +10,25 @@ dependencies = [
     "jax>=0.4.35",
     "numpy>=1.26",
     "scipy>=1.11",
+    "optax>=0.2.8",
 ]
+
+[project.optional-dependencies]
+fab = [
+    "scikit-image>=0.26.0",
+    "shapely>=2.1.2",
+    "gerber-writer>=0.4.3.3",
+]
+measure = ["scikit-rf>=1.12.0"]
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "matplotlib>=3.8",
+    "scikit-image>=0.26.0",
+    "shapely>=2.1.2",
+    "gerber-writer>=0.4.3.3",
+    "scikit-rf>=1.12.0",
 ]
 
 [build-system]
