@@ -98,7 +98,7 @@ A 50×50 design region has 2500 degrees of freedom. Gradient-free methods (GA, p
 - [x] Frequency-domain adjoint (gradient = two forward runs, no time tape) and fused Rust CPU kernels, both in 2D and 3D
 - [x] Design-region-limited DFT monitors (unlocks kernel speedup for DFT-heavy 3D gradients)
 - [x] openEMS cross-check reference data (committed CSVs, compared in CI)
-- [ ] PCB fabrication + NanoVNA measurement campaign
+- [ ] PCB fabrication + NanoVNA measurement campaign — ready-to-order Gerber/drill package and runbook in `fab_campaign/` (probe-fed benchmark patch, JLCPCB DRC clean); physical ordering + measurement pending
 
 ## License
 
