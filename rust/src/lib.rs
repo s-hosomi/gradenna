@@ -41,6 +41,10 @@
 //! Memory layout: every 2D array is row-major (C order), last axis
 //! contiguous. Field shapes: ez (nx, ny), hx (nx, ny-1), hy (nx-1, ny).
 
+// Fused 3D Yee FDTD kernel (forward-only), the 3D analogue of this 2D kernel.
+// Kept in its own module so this file (the 2D kernel) is untouched.
+mod lib3d;
+
 use std::os::raw::c_int;
 use std::slice;
 use std::sync::atomic::{AtomicUsize, Ordering};

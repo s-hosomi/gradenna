@@ -137,6 +137,23 @@ def main(argv=None) -> int:
     def case_3d(n, n_steps, dtype):
         g = Grid3D(n, n, n, 1e-3, 1e-3, 1e-3)
         src = waveform(g, n_steps, dtype)
+
+        if args.backend == "native":
+            import numpy as _np
+
+            from gradenna import native3d
+            if not native3d.is_available():
+                return None, None
+            src_np = _np.asarray(src)
+
+            def run():
+                native3d.simulate_3d_native(
+                    g, source_ijk=(n // 2, n // 2, n // 2), source_current=src_np,
+                    probe_ijk=((n // 4, n // 4, n // 4),),
+                    dtype=_np.dtype(dtype.__name__))
+
+            return bench_native(run, n * n * n, n_steps)
+
         eps = jnp.ones((n, n, n), dtype)
         sig = jnp.zeros((n, n, n), dtype)
 
@@ -165,10 +182,6 @@ def main(argv=None) -> int:
     print(header)
     print("-" * len(header))
     for name, runner, n, n_steps in cases:
-        # The native solver is 2D-only; skip 3D cases for it.
-        if args.backend == "native" and runner is case_3d:
-            print(f"{name:<18} {'-':<8} {'(native: 2D only)':>14}")
-            continue
         for dtype in (jnp.float32, jnp.float64):
             mcs, sec = runner(n, n_steps, dtype)
             if mcs is None:

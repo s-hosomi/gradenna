@@ -814,6 +814,41 @@ def _adjoint_sources_3d(grid, dft_freqs, env, cot: FreqPhasors3D):
     return out
 
 
+def _forward_solver_3d(backend: str):
+    """Return a 3D forward field-solve callable for the requested backend.
+
+    Both variants accept the keyword subset used by the 3D adjoint driver
+    (Jx/Jy/Jz and Mx/My/Mz currents, eps_r, sigma, the lumped port, dft_freqs,
+    cpml) and return an object exposing ``dft`` (a six-component
+    :class:`gradenna.fdtd3d.DFTMonitor`) and ``port_v``/``port_i`` as
+    complex128 phasors. ``"native"`` silently falls back to XLA when the Rust
+    kernel is unavailable. The field solves feed only the numpy gradient
+    contraction (not autodiff), so the gradient is backend-independent.
+    """
+    if backend not in ("xla", "native"):
+        raise ValueError(f"backend must be 'xla' or 'native', got {backend!r}")
+
+    use_native = False
+    if backend == "native":
+        from gradenna import native3d
+
+        use_native = native3d.is_available()
+
+    if use_native:
+        from gradenna import native3d
+
+        def solve(grid, *, dft_dtype=None, checkpoint_segments=None, **kw):
+            # f64 fields + f64 DFT accumulators == dft_dtype=complex128.
+            return native3d.simulate_3d_native(grid, dtype="float64", **kw)
+
+        return solve
+
+    def solve(grid, **kw):
+        return simulate_3d(grid, **kw)
+
+    return solve
+
+
 def freq_adjoint_gradient_3d(
     grid: Grid3D,
     objective,
@@ -829,6 +864,7 @@ def freq_adjoint_gradient_3d(
     port_voltage=None,
     port_resistance: float = 50.0,
     cpml: CPMLSpec = CPMLSpec(),
+    backend: str = "xla",
 ):
     r"""Memory-bounded 3D frequency-domain adjoint gradient of ``objective``.
 
@@ -863,6 +899,7 @@ def freq_adjoint_gradient_3d(
     half_arr = jnp.asarray(np.exp(0.5j * om * dt))
 
     eps_r, sigma = _full_eps_sigma_3d(grid, design_sigma, design_eps_r, design_region)
+    forward = _forward_solver_3d(backend)
 
     common = dict(
         eps_r=eps_r,
@@ -873,7 +910,7 @@ def freq_adjoint_gradient_3d(
     )
 
     # ---- forward run --------------------------------------------------------
-    fwd = simulate_3d(
+    fwd = forward(
         grid,
         source_ijk=source_ijk,
         source_current=source_current,
@@ -913,7 +950,7 @@ def freq_adjoint_gradient_3d(
         src_kw["my_ijk"], src_kw["my_current"] = chans["my"]
     if "mz" in chans:
         src_kw["mz_ijk"], src_kw["mz_current"] = chans["mz"]
-    adj = simulate_3d(grid, **src_kw, **common)
+    adj = forward(grid, **src_kw, **common)
     ad = adj.dft
 
     # ---- gradient contraction on the design region (3 E components) ---------
