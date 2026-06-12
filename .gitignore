@@ -31,3 +31,7 @@ rust/target/
 *.gbr
 *.svg
 fab_output/
+
+# ...but the fabrication-campaign deliverables are tracked artifacts
+!fab_campaign/gerber/*.gbr
+!fab_campaign/gerber/*.svg

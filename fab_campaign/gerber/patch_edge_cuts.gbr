@@ -1,0 +1,20 @@
+G04 Created with the python gerber_writer 0.4.3.3*
+G04 #@! TF.CreationDate,2026-06-12T21:50:37.761372*
+G04 #@! TF.FileFunction,Profile,NP*
+G04 #@! TF.FilePolarity,Positive*
+G04 #@! TF.GenerationSoftware,gradenna,gradenna.fab,0.1*
+%MOMM*%
+%FSLAX36Y36*%
+G75*
+%LPD*%
+G04 #@! TA.AperFunction,Conductor*
+G36*
+X0Y0D02*
+G01*
+X47583886Y0D01*
+X47583886Y39138326D01*
+X0Y39138326D01*
+X0Y0D01*
+G37*
+G04 #@! TD*
+M02*
