@@ -78,8 +78,8 @@ Runs on CPU out of the box (all demos finish in minutes); JAX GPU/TPU backends w
 
 - **Memory-bounded 3D adjoints**: CPML auxiliary fields are stored as PML slabs (−74% ψ memory in 3D) and the time loop supports √N gradient checkpointing, so the full-resolution 3D patch optimization peaks at **7.7 GB (float64) / ~3.9 GB (float32)** — comfortably inside a 24 GB consumer GPU. `gradenna.fdtd3d_memory_estimate` predicts the budget before you launch; the `gpu-24gb` preset of `examples/optimize_3d_patch.py` prints and asserts it.
 - **float32 end to end**: topology optimization runs in plain float32 (complex64 DFT) — the native precision of consumer GPUs. For extreme attenuation between source and monitor, `dft_dtype=jnp.complex128` promotes only the DFT accumulators.
-- **Frequency-domain adjoint**: when the objective depends only on frequency-domain quantities (S11, flux, far field), `simulate_tm_freq` computes the gradient from **two forward simulations** with O(design cells × frequencies) residuals — no time tape at all. Validated against the full-AD oracle to cosine similarity 1.000000 (directional-derivative error 3×10⁻⁵).
-- **Fused Rust kernel (optional)**: the 2D time loop compiles to a cache-friendly native kernel (cargo build on first use, clean fallback without a Rust toolchain). On an M1 Pro: **5,040 Mcell-steps/s** at 1024² float32 — **8.4× over XLA CPU** — and since the frequency-domain adjoint only needs forward runs, gradients get the same speedup. `scripts/benchmark.py --backend native` reproduces the numbers; `gradenna/platform.py` documents why CPU (not jax-metal) is the supported Mac backend.
+- **Frequency-domain adjoint (2D and 3D)**: when the objective depends only on frequency-domain quantities (S11, flux, far field), `simulate_tm_freq` / `simulate_3d_freq` compute the gradient from **two forward simulations** with O(design cells × frequencies) residuals — no time tape at all. Validated against the full-AD oracle to cosine ≥ 0.9999997 in both dimensions (2D directional error 1.7×10⁻⁵), including **NTFF directivity objectives in 3D** — differentiable gain optimization on real 3D antennas with O(design) memory. The magnetic-cotangent coupling constant is derived in closed form (−ε₀/μ₀, the Yee symplectic metric ratio).
+- **Fused Rust kernels (optional)**: the 2D and 3D time loops compile to cache-friendly native kernels (cargo build on first use, clean fallback without a Rust toolchain). On an M1 Pro: 2D **5,040 Mcell-steps/s** at 1024² float32 (**8.4× over XLA CPU**), 3D **796 Mcell-steps/s** at 96³ (**2.4×**, S11-sweep path). The frequency-domain adjoint runs both its forward and adjoint passes on the kernel (`backend="native"`, gradient parity tested). `scripts/benchmark.py --backend native` reproduces the numbers.
 
 ## Why differentiable FDTD?
 
@@ -93,9 +93,9 @@ A 50×50 design region has 2500 degrees of freedom. Gradient-free methods (GA, p
 - [x] Phase 4 — 3D core, patch benchmark, Gerber export, measurement tooling
 - [x] Phase 5 — far-field directivity and multiband objectives
 - [x] GPU memory optimization (PML-slab ψ storage, √N checkpointing, float32 objectives), 3D topology optimization
-- [x] Frequency-domain adjoint (gradient = two forward runs, no time tape) and a fused Rust CPU kernel (8.4× on Apple Silicon)
+- [x] Frequency-domain adjoint (gradient = two forward runs, no time tape) and fused Rust CPU kernels, both in 2D and 3D
 - [ ] openEMS cross-check reference data, PCB fabrication + NanoVNA measurement campaign
-- [ ] 3D port of the frequency-domain adjoint and the fused kernel
+- [ ] Design-region-limited DFT monitors (unlocks kernel speedup for DFT-heavy 3D gradients)
 
 ## License
 
