@@ -67,6 +67,21 @@ Every physics component is tested against analytic solutions and textbook refere
 | `examples/optimize_3d_patch.py` | **3D topology optimization**: copper density on a real FR-4 patch stackup, checkpointed adjoint; `--preset cpu-demo` (39× radiated power in ~2.5 min) or `--preset gpu-24gb` |
 | `examples/patch_to_gerber.py` | Balanis patch design → density map → DRC checks → Gerber |
 
+## Web visualizer
+
+`web/` hosts an interactive three.js viewer (Vite + TypeScript): the topology
+optimization replayed frame by frame, a **live 2D FDTD running in your browser**
+through the Rust→wasm kernel (`web/wasm-kernel/`, 26 kB wasm — move the source,
+paint copper, double-slit and parabolic-mirror scenes), the rotatable 3D
+far-field lobe, and the gradenna-vs-openEMS S11 overlay.
+
+```bash
+cd web/app && npm install && npm run dev   # data is pre-generated and committed
+```
+
+`scripts/export_viz.py` regenerates the data JSONs from the solvers; see
+`web/app/README.md` for the wasm build and GitHub Pages deployment.
+
 ## Quick start
 
 ```bash
