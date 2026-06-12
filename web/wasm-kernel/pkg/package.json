@@ -1,0 +1,16 @@
+{
+  "name": "gradenna-wasm",
+  "type": "module",
+  "description": "Educational single-threaded 2D TM FDTD + CPML kernel for the browser (Rust -> wasm).",
+  "version": "0.1.0",
+  "files": [
+    "gradenna_wasm_bg.wasm",
+    "gradenna_wasm.js",
+    "gradenna_wasm.d.ts"
+  ],
+  "main": "gradenna_wasm.js",
+  "types": "gradenna_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

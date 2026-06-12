@@ -1,0 +1,21 @@
+[package]
+name = "gradenna-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Educational single-threaded 2D TM FDTD + CPML kernel for the browser (Rust -> wasm)."
+
+[lib]
+# cdylib for the wasm build; rlib so the native cargo test target can link it.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# wasm-bindgen is only needed for the wasm32 target; native `cargo test`
+# builds the pure-Rust core without it.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

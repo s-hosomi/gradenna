@@ -1,0 +1,3 @@
+# Build artifacts only. pkg/ is intentionally NOT ignored: the wasm-pack
+# output (gradenna_wasm.js / _bg.wasm) is committed for the browser viewer.
+/target
