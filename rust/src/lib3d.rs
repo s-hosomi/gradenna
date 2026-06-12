@@ -31,55 +31,9 @@
 //!     Ex (nx-1, ny,   nz  )   Ey (nx,   ny-1, nz  )   Ez (nx,   ny,   nz-1)
 //!     Hx (nx,   ny-1, nz-1)   Hy (nx-1, ny,   nz-1)   Hz (nx-1, ny-1, nz  )
 
+use crate::pool::{choose_threads, row_block, Shared, SpinBarrier, ThreadTuning};
 use std::os::raw::c_int;
 use std::slice;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// Spinning sense-reversal barrier (see `lib.rs` for the rationale).
-struct SpinBarrier {
-    count: AtomicUsize,
-    sense: AtomicUsize,
-    n: usize,
-}
-impl SpinBarrier {
-    fn new(n: usize) -> Self {
-        SpinBarrier { count: AtomicUsize::new(0), sense: AtomicUsize::new(0), n }
-    }
-    #[inline]
-    fn wait(&self, local: &mut usize) {
-        let my = *local ^ 1;
-        *local = my;
-        if self.count.fetch_add(1, Ordering::AcqRel) + 1 == self.n {
-            self.count.store(0, Ordering::Relaxed);
-            self.sense.store(my, Ordering::Release);
-        } else {
-            let mut spins = 0u32;
-            while self.sense.load(Ordering::Acquire) != my {
-                spins += 1;
-                if spins < 1 << 12 {
-                    std::hint::spin_loop();
-                } else {
-                    std::thread::yield_now();
-                }
-            }
-        }
-    }
-}
-
-/// A raw `*mut T` shared across the worker pool. Safe because workers touch
-/// disjoint x-row blocks within a barrier phase and the few cross-block reads
-/// happen after a barrier orders them (same pattern as the 2D kernel).
-#[derive(Clone, Copy)]
-struct Shared<T>(*mut T);
-unsafe impl<T> Send for Shared<T> {}
-unsafe impl<T> Sync for Shared<T> {}
-impl<T> Shared<T> {
-    #[inline(always)]
-    #[allow(clippy::mut_from_ref)]
-    unsafe fn m(&self, len: usize) -> &'static mut [T] {
-        slice::from_raw_parts_mut(self.0, len)
-    }
-}
 
 /// Plain old data describing one 3D simulation, shared by both float widths.
 #[repr(C)]
@@ -216,40 +170,11 @@ impl DftSlab3D {
     }
 }
 
-/// Pick a worker count for an `nx*ny*nz` grid (tuned on an M1 Pro; override
-/// with `GRADENNA_NTHREADS`). 3D cells are heavier than 2D so the thresholds
-/// for stepping up to 4 / 6 threads sit at smaller cell counts.
-fn choose_threads(cells: usize, nx: usize) -> usize {
-    let hw = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    if let Ok(v) = std::env::var("GRADENNA_NTHREADS") {
-        if let Ok(n) = v.parse::<usize>() {
-            if n >= 1 {
-                return n.min(hw).min(nx.max(1)).max(1);
-            }
-        }
-    }
-    // Cap at 6 P-cores (the 2 E-cores stall every barrier). 64^3 = 262144
-    // cells uses all 6; tiny grids fall back to fewer x-slabs.
-    let p_cores = 6;
-    let want = if cells < 32 * 1024 {
-        2
-    } else if cells < 96 * 1024 {
-        4
-    } else {
-        p_cores
-    };
-    want.min(hw).min(nx.max(1)).max(1)
-}
-
-/// Contiguous x-row block `[r0, r1)` for worker `t` of `nthreads`.
-#[inline]
-fn row_block(nx: usize, nthreads: usize, t: usize) -> (usize, usize) {
-    let base = nx / nthreads;
-    let rem = nx % nthreads;
-    let r0 = t * base + t.min(rem);
-    let r1 = r0 + base + if t < rem { 1 } else { 0 };
-    (r0, r1)
-}
+/// 3D thread tuning, measured on an M1 Pro (do not retune). 3D cells are
+/// heavier than 2D so the thresholds for stepping up to 4 / 6 threads sit at
+/// smaller cell counts: 64^3 = 262144 cells uses all 6 P-cores; tiny grids fall
+/// back to fewer x-slabs.
+const TUNING_3D: ThreadTuning = ThreadTuning { small_below: 32 * 1024, medium_below: 96 * 1024 };
 
 /// Static low/high PML slab membership along an axis of `n` positions.
 #[derive(Clone, Copy)]
@@ -475,7 +400,7 @@ macro_rules! make_kernel3d {
             let sz_ei = Slab::new(nkm, npml); // interior z (E)
 
             let cells = nx * ny * nz;
-            let nthreads = choose_threads(cells, nx);
+            let nthreads = choose_threads(cells, nx, TUNING_3D);
 
             // Strides (k contiguous). Named <field>_si / _sj for i / j stride.
             // Ex (nx-1, ny, nz):   si = ny*nz,       sj = nz

@@ -36,7 +36,7 @@ use wasm_bindgen::prelude::*;
 // --- Physical constants (SI), f32 (educational demo precision) ----------------
 
 const C0: f32 = 299_792_458.0; // speed of light [m/s]
-const MU0: f32 = 1.256_637_062_12e-6; // vacuum permeability [H/m]
+const MU0: f32 = 1.256_637e-6; // vacuum permeability [H/m] (f32-exact, 0x35a8a9b8)
 const EPS0: f32 = 1.0 / (MU0 * C0 * C0); // vacuum permittivity [F/m]
 const ETA0: f32 = MU0 * C0; // free-space impedance [ohm]
 
