@@ -40,9 +40,10 @@ grad = jax.grad(neg_radiated_power)(0.5 * jnp.ones((52, 52)))  # 逆方向パス
 
 ## インタラクティブ・ビジュアライザ
 
-`web/` に上記すべてを見られる three.js ビューアがあります — **26 kB の Rust→wasm
-カーネルによるブラウザ内ライブ 2D FDTD ソルバー**込み。データは生成済みでコミット
-されています: `cd web/app && npm install && npm run dev`
+**[ライブデモを開く →](https://s-hosomi.github.io/gradenna/)** — ローカル実行は
+`cd web/app && npm install && npm run dev`。上記すべてを見られる three.js ビューアで、
+**26 kB の Rust→wasm カーネルによるブラウザ内ライブ 2D FDTD ソルバー**込みです
+（データは生成済みでコミットされています）。
 
 <table>
   <tr>

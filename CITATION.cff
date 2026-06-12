@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use gradenna in your research, please cite it as below."
+title: "gradenna: differentiable FDTD antenna inverse design in JAX"
+authors:
+  - family-names: "Hosomi"
+    given-names: "Shunsuke"
+repository-code: "https://github.com/s-hosomi/gradenna"
+license: MIT
+keywords:
+  - FDTD
+  - antenna
+  - inverse design
+  - topology optimization
+  - adjoint method
+  - automatic differentiation
+  - JAX

@@ -41,9 +41,11 @@ grad = jax.grad(neg_radiated_power)(0.5 * jnp.ones((52, 52)))  # one backward pa
 
 ## Interactive visualizer
 
-`web/` hosts a three.js viewer for everything above — including a **live 2D FDTD
-solver running in your browser** through a 26 kB Rust→wasm kernel. Data is
-pre-generated and committed: `cd web/app && npm install && npm run dev`.
+**[Open the live demo →](https://s-hosomi.github.io/gradenna/)** — or run it
+locally with `cd web/app && npm install && npm run dev`. It is a three.js
+viewer for everything above, including a **live 2D FDTD solver running in your
+browser** through a 26 kB Rust→wasm kernel (data is pre-generated and
+committed).
 
 <table>
   <tr>
