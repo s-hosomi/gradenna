@@ -38,6 +38,11 @@ from gradenna.fdtd3d import (
 )
 from gradenna.grid import Grid2D, Grid3D
 from gradenna.materials import sheet_conductivity, sigma_from_density
+from gradenna.mom import (
+    wire_dipole_impedance,
+    wire_dipole_input_current,
+    wire_impedance_matrix,
+)
 from gradenna.monitors import log_radiated_fraction, poynting_flux_box_2d
 from gradenna.ntff import (
     directivity_2d,
@@ -133,4 +138,7 @@ __all__ = [
     "simulate_tm_freq",
     "tanh_projection",
     "time_series_dft",
+    "wire_dipole_impedance",
+    "wire_dipole_input_current",
+    "wire_impedance_matrix",
 ]
