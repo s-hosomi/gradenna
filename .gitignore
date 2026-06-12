@@ -39,3 +39,6 @@ fab_output/
 # ...and so are the README media assets
 !assets/*.png
 !assets/*.gif
+
+# ...and the social card served by the web visualizer
+!web/app/public/og.png
