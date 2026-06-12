@@ -191,6 +191,10 @@ def simulate_tm(
     dft_dtype=None,
     cpml: CPMLSpec = CPMLSpec(),
     record_energy: bool = False,
+    mx_ij=None,
+    mx_current=None,
+    my_ij=None,
+    my_current=None,
 ) -> SimResult:
     """Run a 2D TM FDTD simulation.
 
@@ -225,6 +229,16 @@ def simulate_tm(
         cpml: CPML parameters; thickness 0 gives a plain PEC box.
         record_energy: also record the total field energy at every step
             (adds full-grid reductions; off by default).
+        mx_ij, mx_current: magnetic-current sources on the Hx grid -- index
+            pair(s) ``(i, j)`` (Hx lives at ``(i, j+1/2)``) and waveform(s)
+            ``Mx(t)`` sampled at ``t = (n+1/2) dt``, shape ``(n_steps,)`` or
+            ``(n_steps, k)``. Injected as ``Hx -= (dt/mu) * Mx`` (the
+            ``mu dH/dt = -curl E - M`` magnetic-current term). Used by the
+            frequency-domain adjoint (:mod:`gradenna.freq_adjoint`) to drive
+            flux-objective (Poynting) H-system cotangents; backward compatible
+            (no effect when omitted).
+        my_ij, my_current: same for the Hy grid (Hy at ``(i+1/2, j)``),
+            injected as ``Hy -= (dt/mu) * My``.
 
     The number of time steps is taken from `source_current` and/or the port
     voltage waveforms (which must agree); at least one of them is required.
@@ -268,6 +282,10 @@ def simulate_tm(
     if source_current is not None:
         operands.append(source_current)
     operands.extend(v for v in port_voltages if v is not None)
+    if mx_current is not None:
+        operands.append(jnp.asarray(mx_current))
+    if my_current is not None:
+        operands.append(jnp.asarray(my_current))
     dtype = jnp.result_type(*operands)
 
     probe_idx = _as_index_array(probe_ij, "probe_ij", grid, margin=0)
@@ -297,6 +315,25 @@ def simulate_tm(
             axis=1,
         )
         pi, pj = port_idx[:, 0], port_idx[:, 1]
+
+    # Magnetic-current sources (Hx and Hy grids); empty when unused.
+    def _setup_mag(m_ij, m_current, shape, name):
+        if (m_ij is None) != (m_current is None):
+            raise ValueError(f"{name}_ij and {name}_current must be given together")
+        if m_current is None:
+            return np.zeros((0, 2), np.int32), jnp.zeros((n_steps, 0), dtype)
+        idx = np.asarray(m_ij, np.int32).reshape(-1, 2)
+        mc = jnp.asarray(m_current, dtype)
+        if mc.ndim == 1:
+            mc = mc[:, None]
+        if mc.shape[0] != n_steps:
+            raise ValueError(f"{name}_current length {mc.shape[0]} != n_steps {n_steps}")
+        if mc.shape[1] != idx.shape[0]:
+            raise ValueError(f"{name}_current has {mc.shape[1]} columns for {idx.shape[0]} sources")
+        return idx, mc
+
+    mx_idx, mx_cur = _setup_mag(mx_ij, mx_current, (nx, ny - 1), "mx")
+    my_idx, my_cur = _setup_mag(my_ij, my_current, (nx - 1, ny), "my")
 
     eps = EPS0 * jnp.broadcast_to(jnp.asarray(eps_r, dtype), (nx, ny))
     sig = jnp.broadcast_to(jnp.asarray(sigma, dtype), (nx, ny))
@@ -332,7 +369,6 @@ def simulate_tm(
     ky_h = cy_h.inv_kappa[None, :]
 
     inv_dx, inv_dy = 1.0 / grid.dx, 1.0 / grid.dy
-    dt_mu = dt / MU0
     # Discretized line current: Jz = I / (dx dy) over one cell.
     cb_src = cb[src_idx[:, 0], src_idx[:, 1]] * (inv_dx * inv_dy)
     if n_ports:
@@ -356,9 +392,14 @@ def simulate_tm(
         ph_e = jnp.asarray(np.exp(-2j * np.pi * np.outer(n_np + 1.0, f_np) * dt), cdtype)
         ph_h = jnp.asarray(np.exp(-2j * np.pi * np.outer(n_np + 0.5, f_np) * dt), cdtype)
 
+    dt_mu = dt / MU0
     xs = {"j": source_current}
     if n_ports:
         xs["vs"] = port_vs
+    if mx_idx.shape[0]:
+        xs["mx"] = mx_cur
+    if my_idx.shape[0]:
+        xs["my"] = my_cur
     if n_freq:
         xs["ph_e"] = ph_e
         xs["ph_h"] = ph_h
@@ -370,10 +411,16 @@ def simulate_tm(
         dez_dy = (ez[:, 1:] - ez[:, :-1]) * inv_dy  # (nx, ny-1) at Hx points
         p_hxy, term_hx = psi_step(psi.hxy, dez_dy, bc_hxy, sy_h, 1, ky_h)
         hx = hx - dt_mu * term_hx
+        if mx_idx.shape[0]:
+            # mu dHx/dt = -dEz/dy - Mx  ->  Hx -= (dt/mu) Mx
+            hx = hx.at[mx_idx[:, 0], mx_idx[:, 1]].add(-dt_mu * x["mx"])
 
         dez_dx = (ez[1:, :] - ez[:-1, :]) * inv_dx  # (nx-1, ny) at Hy points
         p_hyx, term_hy = psi_step(psi.hyx, dez_dx, bc_hyx, sx_h, 0, kx_h)
         hy = hy + dt_mu * term_hy
+        if my_idx.shape[0]:
+            # mu dHy/dt = +dEz/dx - My  ->  Hy -= (dt/mu) My
+            hy = hy.at[my_idx[:, 0], my_idx[:, 1]].add(-dt_mu * x["my"])
 
         if n_ports:
             # Ampere loop around the port cell with H at (n+1/2) dt

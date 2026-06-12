@@ -10,6 +10,12 @@ from gradenna.cpml import CPMLSpec, alpha_max_for_fmin
 from gradenna.designs import patch_design
 from gradenna.estimate import fdtd3d_memory_estimate, fits_gpu, gpu_fit_report
 from gradenna.fdtd2d import Port, SimResult, field_energy, simulate_tm
+from gradenna.freq_adjoint import (
+    FreqPhasors,
+    exact_design_gradient,
+    freq_adjoint_gradient,
+    simulate_tm_freq,
+)
 from gradenna.fdtd3d import (
     SimResult3D,
     field_energy_3d,
@@ -57,6 +63,7 @@ __all__ = [
     "BandPulse",
     "CPMLSpec",
     "DesignTransform",
+    "FreqPhasors",
     "Grid2D",
     "Grid3D",
     "Port",
@@ -68,10 +75,12 @@ __all__ = [
     "connected_to_seed",
     "directivity_2d",
     "directivity_3d",
+    "exact_design_gradient",
     "fdtd3d_memory_estimate",
     "field_energy",
     "field_energy_3d",
     "fits_gpu",
+    "freq_adjoint_gradient",
     "gain",
     "gpu_fit_report",
     "gaussian",
@@ -97,6 +106,7 @@ __all__ = [
     "sigma_from_density",
     "simulate_3d",
     "simulate_tm",
+    "simulate_tm_freq",
     "tanh_projection",
     "time_series_dft",
 ]
