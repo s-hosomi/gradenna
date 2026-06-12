@@ -47,6 +47,35 @@ def is_available() -> bool:
 # ---------------------------------------------------------------------------
 
 
+class _DFTSlab3D(ctypes.Structure):
+    """One component's DFT slab; mirrors ``DftSlab3D`` in rust/src/lib3d.rs.
+
+    ``on == 0`` marks the component off (no accumulation, zero-sized buffer).
+    Bounds are the half-open box ``[lo, hi)`` in that component's own array
+    coordinates.
+    """
+
+    _fields_ = [
+        ("on", ctypes.c_int),
+        ("lo0", ctypes.c_int), ("hi0", ctypes.c_int),
+        ("lo1", ctypes.c_int), ("hi1", ctypes.c_int),
+        ("lo2", ctypes.c_int), ("hi2", ctypes.c_int),
+    ]
+
+
+class _DFTRegion3D(ctypes.Structure):
+    """Per-component DFT slabs (ex, ey, ez, hx, hy, hz -- DFTRegions order).
+
+    Mirrors ``DftRegion3D`` in rust/src/lib3d.rs. A NULL pointer to this struct
+    selects the full-grid DFT (backward compatible).
+    """
+
+    _fields_ = [
+        ("ex", _DFTSlab3D), ("ey", _DFTSlab3D), ("ez", _DFTSlab3D),
+        ("hx", _DFTSlab3D), ("hy", _DFTSlab3D), ("hz", _DFTSlab3D),
+    ]
+
+
 class _SimParams3D(ctypes.Structure):
     _fields_ = [
         ("nx", ctypes.c_int), ("ny", ctypes.c_int), ("nz", ctypes.c_int),
@@ -128,6 +157,7 @@ def _configure3d(lib, dtype) -> None:
         ctypes.POINTER(_SourceBuffers),
         ctypes.POINTER(_FieldBuffers),
         fp, fp, fp, fp, fp, fp, fp, fp,  # dt_mu, inv_dx/dy/dz, dx, dy, dz, mu0
+        ctypes.POINTER(_DFTRegion3D),  # NULL = full-grid DFT
     ]
     _CONFIGURED.add(name)
 
@@ -164,6 +194,7 @@ def simulate_3d_native(
     probe_ijk=(),
     cpml: CPMLSpec = CPMLSpec(),
     dft_freqs=None,
+    dft_regions=None,
     record_energy: bool = False,
     dtype=None,
 ) -> SimResult3D:
@@ -176,6 +207,13 @@ def simulate_3d_native(
     accumulators are always kept in float64 internally (== complex128) and
     returned as complex128. Raises ``RuntimeError`` if the native library is
     unavailable; gate on :func:`is_available` for a fallback.
+
+    ``dft_regions`` (optional :class:`gradenna.dft_region.DFTRegions`) limits
+    the running DFT to per-component slabs: ``result.dft`` is then a
+    :class:`gradenna.dft_region.RegionDFTMonitor` whose slab spectra match the
+    corresponding slices of the full-grid DFT (a ``None`` component slab gives
+    a ``None`` spectrum). Without it the full-grid :class:`DFTMonitor` is
+    returned, bit-identical to before this option existed.
     """
     lib = _load()
     if lib is None:
@@ -388,6 +426,28 @@ def simulate_3d_native(
     # DFT exact-phase tables (float64, identical to simulate_3d).
     dft_freqs = () if dft_freqs is None else tuple(float(f) for f in np.atleast_1d(dft_freqs))
     n_freq = len(dft_freqs)
+
+    # Design-region-limited DFT: each component accumulates only on its slab
+    # (or not at all when its slab is None). The full-grid shapes below become
+    # per-component slab shapes, and a `_DFTRegion3D` struct is handed to the
+    # kernel (NULL == the full-grid path). The slab bounds and freq-major /
+    # cell-major layout match the XLA region path in `simulate_3d`.
+    has_regions = n_freq and dft_regions is not None
+    full_shapes = (
+        (nx - 1, ny, nz), (nx, ny - 1, nz), (nx, ny, nz - 1),
+        (nx, ny - 1, nz - 1), (nx - 1, ny, nz - 1), (nx - 1, ny - 1, nz),
+    )
+    if has_regions:
+        if len(dft_regions) != 6:
+            raise ValueError("dft_regions must have six per-component entries")
+        slabs = tuple(dft_regions)  # FieldSlab | None per component
+        dft_shapes = tuple(
+            None if slab is None else tuple(slab.shape)
+            for slab in slabs
+        )
+    else:
+        slabs = (None,) * 6
+        dft_shapes = full_shapes
     if n_freq:
         f_np = np.asarray(dft_freqs, np.float64)
         n_np = np.arange(n_steps, dtype=np.float64)
@@ -413,15 +473,20 @@ def simulate_3d_native(
     out_energy = np.zeros((n_steps,), dtype) if record_energy else np.zeros((0,), dtype)
 
     def _dft(shape):
-        a = np.zeros((n_freq,) + shape, np.float64) if n_freq else np.zeros((0,), np.float64)
+        # shape is None for an off component (zero-sized buffer, kernel skips
+        # it) or a per-component (full-grid or slab) shape.
+        if not n_freq or shape is None:
+            a = np.zeros((0,), np.float64)
+        else:
+            a = np.zeros((n_freq,) + tuple(shape), np.float64)
         return a, np.zeros_like(a)
 
-    dft_ex_re, dft_ex_im = _dft((nx - 1, ny, nz))
-    dft_ey_re, dft_ey_im = _dft((nx, ny - 1, nz))
-    dft_ez_re, dft_ez_im = _dft((nx, ny, nz - 1))
-    dft_hx_re, dft_hx_im = _dft((nx, ny - 1, nz - 1))
-    dft_hy_re, dft_hy_im = _dft((nx - 1, ny, nz - 1))
-    dft_hz_re, dft_hz_im = _dft((nx - 1, ny - 1, nz))
+    dft_ex_re, dft_ex_im = _dft(dft_shapes[0])
+    dft_ey_re, dft_ey_im = _dft(dft_shapes[1])
+    dft_ez_re, dft_ez_im = _dft(dft_shapes[2])
+    dft_hx_re, dft_hx_im = _dft(dft_shapes[3])
+    dft_hy_re, dft_hy_im = _dft(dft_shapes[4])
+    dft_hz_re, dft_hz_im = _dft(dft_shapes[5])
 
     # --- assemble the structs ------------------------------------------------
     # Keep references to every numpy array alive for the duration of the call
@@ -481,16 +546,30 @@ def simulate_3d_native(
         n_probes, n_freq, 1 if record_energy else 0,
     )
 
+    # Region pointer: NULL for the full-grid DFT, else a `_DFTRegion3D`.
+    region_ptr = None
+    if has_regions:
+        def _slab(slab):
+            if slab is None:
+                return _DFTSlab3D(0, 0, 0, 0, 0, 0, 0)
+            (lo0, lo1, lo2) = (int(v) for v in slab.lo)
+            (hi0, hi1, hi2) = (int(v) for v in slab.hi)
+            return _DFTSlab3D(1, lo0, hi0, lo1, hi1, lo2, hi2)
+
+        region_struct = _DFTRegion3D(*(_slab(s) for s in slabs))
+        region_ptr = ctypes.byref(region_struct)
+
     run(
         ctypes.byref(params), ctypes.byref(coeff), ctypes.byref(cpml_struct),
         ctypes.byref(srcs), ctypes.byref(fb),
         fp(dt / MU0), fp(inv_dx), fp(inv_dy), fp(inv_dz),
         fp(dx), fp(dy), fp(dz), fp(MU0),
+        region_ptr,
     )
     del keep  # release the buffer references after the call returns
 
     dft = None
-    if n_freq:
+    if n_freq and not has_regions:
         dft = DFTMonitor(
             np.asarray(dft_freqs, np.float64),
             (dft_ex_re + 1j * dft_ex_im) * dt,
@@ -499,6 +578,22 @@ def simulate_3d_native(
             (dft_hx_re + 1j * dft_hx_im) * dt,
             (dft_hy_re + 1j * dft_hy_im) * dt,
             (dft_hz_re + 1j * dft_hz_im) * dt,
+        )
+    elif has_regions:
+        # One complex128 slab spectrum per accumulated component; None for an
+        # off component (slab is None) -- mirrors the XLA RegionDFTMonitor.
+        from gradenna.dft_region import RegionDFTMonitor
+
+        re_im = (
+            (dft_ex_re, dft_ex_im), (dft_ey_re, dft_ey_im), (dft_ez_re, dft_ez_im),
+            (dft_hx_re, dft_hx_im), (dft_hy_re, dft_hy_im), (dft_hz_re, dft_hz_im),
+        )
+        comps = tuple(
+            None if slab is None else (re + 1j * im) * dt
+            for slab, (re, im) in zip(slabs, re_im)
+        )
+        dft = RegionDFTMonitor(
+            np.asarray(dft_freqs, np.float64), dft_regions, *comps
         )
 
     # simulate_3d supports a single port and returns 1D (n_steps,) V/I series.

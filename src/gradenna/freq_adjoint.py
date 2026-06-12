@@ -850,13 +850,12 @@ def _forward_solver_3d(backend: str):
         from gradenna import native3d
 
         def solve(grid, *, dft_dtype=None, checkpoint_segments=None, dft_regions=None, **kw):
-            # f64 fields + f64 DFT accumulators == dft_dtype=complex128.
-            if dft_regions is not None:
-                raise NotImplementedError(
-                    "region-limited DFT (dft_regions) is not yet implemented for the "
-                    "native Rust 3D backend; use backend='xla'"
-                )
-            return native3d.simulate_3d_native(grid, dtype="float64", **kw)
+            # f64 fields + f64 DFT accumulators == dft_dtype=complex128. The
+            # native kernel accumulates the DFT on the design/objective slabs
+            # directly (region-limited path), returning a RegionDFTMonitor.
+            return native3d.simulate_3d_native(
+                grid, dtype="float64", dft_regions=dft_regions, **kw
+            )
 
         return solve
 

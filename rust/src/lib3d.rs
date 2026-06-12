@@ -177,6 +177,45 @@ pub struct FieldBuffers<S> {
     dft_hz_re: *mut f64, dft_hz_im: *mut f64,
 }
 
+/// One component's design-region DFT slab `[lo, hi)` in that component's own
+/// array coordinates. `on == 0` means the component is not accumulated (the
+/// matching `RegionDFTMonitor` entry is `None`); its DFT buffer is then sized 0.
+#[repr(C)]
+pub struct DftSlab3D {
+    on: c_int,
+    lo0: c_int,
+    hi0: c_int,
+    lo1: c_int,
+    hi1: c_int,
+    lo2: c_int,
+    hi2: c_int,
+}
+
+/// Per-component DFT slabs (ex, ey, ez, hx, hy, hz -- same order as the Python
+/// `DFTRegions`). A NULL `*const DftRegion3D` selects the full-grid DFT (the
+/// backward-compatible path, bit-identical to before this struct existed).
+#[repr(C)]
+pub struct DftRegion3D {
+    ex: DftSlab3D,
+    ey: DftSlab3D,
+    ez: DftSlab3D,
+    hx: DftSlab3D,
+    hy: DftSlab3D,
+    hz: DftSlab3D,
+}
+
+impl DftSlab3D {
+    /// Number of cells in the slab (0 when the component is off).
+    #[inline]
+    fn volume(&self) -> usize {
+        if self.on == 0 {
+            0
+        } else {
+            ((self.hi0 - self.lo0) * (self.hi1 - self.lo1) * (self.hi2 - self.lo2)) as usize
+        }
+    }
+}
+
 /// Pick a worker count for an `nx*ny*nz` grid (tuned on an M1 Pro; override
 /// with `GRADENNA_NTHREADS`). 3D cells are heavier than 2D so the thresholds
 /// for stepping up to 4 / 6 threads sit at smaller cell counts.
@@ -246,12 +285,15 @@ macro_rules! make_kernel3d {
             dy: $scalar,
             dz: $scalar,
             mu0: $scalar,
+            region: *const DftRegion3D,
         ) {
             let p = &*p;
             let c = &*coeff;
             let pml_t = &*cpml;
             let s = &*srcs;
             let f = &*fields;
+            // NULL region == full-grid DFT (backward compatible, bit-identical).
+            let region: Option<&DftRegion3D> = region.as_ref();
 
             let nx = p.nx as usize;
             let ny = p.ny as usize;
@@ -448,6 +490,17 @@ macro_rules! make_kernel3d {
             let hx_si = (ny - 1) * (nz - 1); let hx_sj = nz - 1;
             let hy_si = ny * (nz - 1); let hy_sj = nz - 1;
             let hz_si = (ny - 1) * nz; let hz_sj = nz;
+
+            // Per-component DFT buffer cell counts. Full-grid: the field's own
+            // element count. Region-limited: the slab volume (0 when off). The
+            // re/im buffers are sized `n_freq * <this>` on the Python side.
+            let (dft_nx, dft_ny, dft_nz, dft_nhx, dft_nhy, dft_nhz) = match region {
+                None => (ex_n, ey_n, ez_n, hx_n, hy_n, hz_n),
+                Some(r) => (
+                    r.ex.volume(), r.ey.volume(), r.ez.volume(),
+                    r.hx.volume(), r.hy.volume(), r.hz.volume(),
+                ),
+            };
 
             let worker = |t: usize, barrier: &SpinBarrier| {
                 let mut sense = 0usize;
@@ -649,36 +702,71 @@ macro_rules! make_kernel3d {
                     // (5) Running-DFT accumulation over owned rows.
                     // =====================================================
                     if n_freq > 0 {
-                        let dft_ex_re = dft_ex_re_p.m(n_freq * ex_n);
-                        let dft_ex_im = dft_ex_im_p.m(n_freq * ex_n);
-                        let dft_ey_re = dft_ey_re_p.m(n_freq * ey_n);
-                        let dft_ey_im = dft_ey_im_p.m(n_freq * ey_n);
-                        let dft_ez_re = dft_ez_re_p.m(n_freq * ez_n);
-                        let dft_ez_im = dft_ez_im_p.m(n_freq * ez_n);
-                        let dft_hx_re = dft_hx_re_p.m(n_freq * hx_n);
-                        let dft_hx_im = dft_hx_im_p.m(n_freq * hx_n);
-                        let dft_hy_re = dft_hy_re_p.m(n_freq * hy_n);
-                        let dft_hy_im = dft_hy_im_p.m(n_freq * hy_n);
-                        let dft_hz_re = dft_hz_re_p.m(n_freq * hz_n);
-                        let dft_hz_im = dft_hz_im_p.m(n_freq * hz_n);
-                        // Owned flat ranges per field (full j,k for x rows).
-                        let ex_lo = r0 * ex_si; let ex_hi = r1.min(nx - 1) * ex_si;
-                        let ey_lo = r0 * ey_si; let ey_hi = r1 * ey_si;
-                        let ez_lo = r0 * ez_si; let ez_hi = r1 * ez_si;
-                        let hx_lo = r0 * hx_si; let hx_hi = r1 * hx_si;
-                        let hy_lo = r0 * hy_si; let hy_hi = r1.min(nx - 1) * hy_si;
-                        let hz_lo = r0 * hz_si; let hz_hi = r1.min(nx - 1) * hz_si;
-                        for kf in 0..n_freq {
-                            let pe_re = ph_e_re[n * n_freq + kf];
-                            let pe_im = ph_e_im[n * n_freq + kf];
-                            let ph_re = ph_h_re[n * n_freq + kf];
-                            let ph_im = ph_h_im[n * n_freq + kf];
-                            dft_acc!(ex, dft_ex_re, dft_ex_im, kf * ex_n, ex_lo, ex_hi, pe_re, pe_im);
-                            dft_acc!(ey, dft_ey_re, dft_ey_im, kf * ey_n, ey_lo, ey_hi, pe_re, pe_im);
-                            dft_acc!(ez, dft_ez_re, dft_ez_im, kf * ez_n, ez_lo, ez_hi, pe_re, pe_im);
-                            dft_acc!(hx, dft_hx_re, dft_hx_im, kf * hx_n, hx_lo, hx_hi, ph_re, ph_im);
-                            dft_acc!(hy, dft_hy_re, dft_hy_im, kf * hy_n, hy_lo, hy_hi, ph_re, ph_im);
-                            dft_acc!(hz, dft_hz_re, dft_hz_im, kf * hz_n, hz_lo, hz_hi, ph_re, ph_im);
+                        let dft_ex_re = dft_ex_re_p.m(n_freq * dft_nx);
+                        let dft_ex_im = dft_ex_im_p.m(n_freq * dft_nx);
+                        let dft_ey_re = dft_ey_re_p.m(n_freq * dft_ny);
+                        let dft_ey_im = dft_ey_im_p.m(n_freq * dft_ny);
+                        let dft_ez_re = dft_ez_re_p.m(n_freq * dft_nz);
+                        let dft_ez_im = dft_ez_im_p.m(n_freq * dft_nz);
+                        let dft_hx_re = dft_hx_re_p.m(n_freq * dft_nhx);
+                        let dft_hx_im = dft_hx_im_p.m(n_freq * dft_nhx);
+                        let dft_hy_re = dft_hy_re_p.m(n_freq * dft_nhy);
+                        let dft_hy_im = dft_hy_im_p.m(n_freq * dft_nhy);
+                        let dft_hz_re = dft_hz_re_p.m(n_freq * dft_nhz);
+                        let dft_hz_im = dft_hz_im_p.m(n_freq * dft_nhz);
+                        match region {
+                            None => {
+                                // Full-grid DFT: owned flat ranges per field
+                                // (full j,k for x rows). Unchanged from before.
+                                let ex_lo = r0 * ex_si; let ex_hi = r1.min(nx - 1) * ex_si;
+                                let ey_lo = r0 * ey_si; let ey_hi = r1 * ey_si;
+                                let ez_lo = r0 * ez_si; let ez_hi = r1 * ez_si;
+                                let hx_lo = r0 * hx_si; let hx_hi = r1 * hx_si;
+                                let hy_lo = r0 * hy_si; let hy_hi = r1.min(nx - 1) * hy_si;
+                                let hz_lo = r0 * hz_si; let hz_hi = r1.min(nx - 1) * hz_si;
+                                for kf in 0..n_freq {
+                                    let pe_re = ph_e_re[n * n_freq + kf];
+                                    let pe_im = ph_e_im[n * n_freq + kf];
+                                    let ph_re = ph_h_re[n * n_freq + kf];
+                                    let ph_im = ph_h_im[n * n_freq + kf];
+                                    dft_acc!(ex, dft_ex_re, dft_ex_im, kf * ex_n, ex_lo, ex_hi, pe_re, pe_im);
+                                    dft_acc!(ey, dft_ey_re, dft_ey_im, kf * ey_n, ey_lo, ey_hi, pe_re, pe_im);
+                                    dft_acc!(ez, dft_ez_re, dft_ez_im, kf * ez_n, ez_lo, ez_hi, pe_re, pe_im);
+                                    dft_acc!(hx, dft_hx_re, dft_hx_im, kf * hx_n, hx_lo, hx_hi, ph_re, ph_im);
+                                    dft_acc!(hy, dft_hy_re, dft_hy_im, kf * hy_n, hy_lo, hy_hi, ph_re, ph_im);
+                                    dft_acc!(hz, dft_hz_re, dft_hz_im, kf * hz_n, hz_lo, hz_hi, ph_re, ph_im);
+                                }
+                            }
+                            Some(r) => {
+                                // Region-limited DFT: each component accumulates
+                                // only on its slab, into a buffer of slab-local
+                                // (i-lo0, j-lo1, k-lo2) cells. Off (on==0)
+                                // components are skipped (their buffers are 0).
+                                for kf in 0..n_freq {
+                                    let pe_re = ph_e_re[n * n_freq + kf];
+                                    let pe_im = ph_e_im[n * n_freq + kf];
+                                    let ph_re = ph_h_re[n * n_freq + kf];
+                                    let ph_im = ph_h_im[n * n_freq + kf];
+                                    dft_region_acc!(
+                                        ex, dft_ex_re, dft_ex_im, &r.ex, kf * dft_nx,
+                                        r0, r1, ex_si, ex_sj, pe_re, pe_im);
+                                    dft_region_acc!(
+                                        ey, dft_ey_re, dft_ey_im, &r.ey, kf * dft_ny,
+                                        r0, r1, ey_si, ey_sj, pe_re, pe_im);
+                                    dft_region_acc!(
+                                        ez, dft_ez_re, dft_ez_im, &r.ez, kf * dft_nz,
+                                        r0, r1, ez_si, ez_sj, pe_re, pe_im);
+                                    dft_region_acc!(
+                                        hx, dft_hx_re, dft_hx_im, &r.hx, kf * dft_nhx,
+                                        r0, r1, hx_si, hx_sj, ph_re, ph_im);
+                                    dft_region_acc!(
+                                        hy, dft_hy_re, dft_hy_im, &r.hy, kf * dft_nhy,
+                                        r0, r1, hy_si, hy_sj, ph_re, ph_im);
+                                    dft_region_acc!(
+                                        hz, dft_hz_re, dft_hz_im, &r.hz, kf * dft_nhz,
+                                        r0, r1, hz_si, hz_sj, ph_re, ph_im);
+                                }
+                            }
                         }
                     }
 
@@ -760,6 +848,51 @@ macro_rules! dft_acc {
             let fv = fld[n] as f64;
             re[n] += pr * fv;
             im[n] += pi * fv;
+        }
+    }};
+}
+
+/// One frequency's region-limited DFT accumulation for one component.
+///
+/// Accumulates the field over the slab `[lo0,hi0) x [lo1,hi1) x [lo2,hi2)`
+/// (the component's own array coordinates), intersected with this worker's
+/// owned x rows `[r0, r1)`. The output is slab-local: cell `(i, j, k)` lands
+/// at `(i-lo0)*ss_i + (j-lo1)*ss_j + (k-lo2)` (freq-major, cell-major --
+/// matching the Python reshape to `(n_freq, di, dj, dk)`). The innermost k
+/// span is contiguous so LLVM widens the f32->f64 accumulate cleanly. Off
+/// (`on == 0`) components are skipped. Empty intersections add nothing.
+macro_rules! dft_region_acc {
+    ($field:ident, $re:ident, $im:ident, $slab:expr, $off:expr,
+     $r0:expr, $r1:expr, $si:expr, $sj:expr, $pr:expr, $pi:expr) => {{
+        let slab = $slab;
+        if slab.on != 0 {
+            let lo0 = slab.lo0 as usize; let hi0 = slab.hi0 as usize;
+            let lo1 = slab.lo1 as usize; let hi1 = slab.hi1 as usize;
+            let lo2 = slab.lo2 as usize; let hi2 = slab.hi2 as usize;
+            let dj = hi1 - lo1; let dk = hi2 - lo2;
+            let ss_i = dj * dk; let ss_j = dk;
+            let off = $off;
+            let (pr, pi) = ($pr, $pi);
+            // Slab x rows owned by this worker.
+            let i_lo = lo0.max($r0); let i_hi = hi0.min($r1);
+            let mut i = i_lo;
+            while i < i_hi {
+                let frow = i * $si;          // field row base
+                let orow = (i - lo0) * ss_i;  // slab-local row base
+                for j in lo1..hi1 {
+                    let fbase = frow + j * $sj + lo2;
+                    let obase = off + orow + (j - lo1) * ss_j;
+                    let fld = &$field[fbase..fbase + dk];
+                    let re = &mut $re[obase..obase + dk];
+                    let im = &mut $im[obase..obase + dk];
+                    for n in 0..dk {
+                        let fv = fld[n] as f64;
+                        re[n] += pr * fv;
+                        im[n] += pi * fv;
+                    }
+                }
+                i += 1;
+            }
         }
     }};
 }
