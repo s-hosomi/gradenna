@@ -275,10 +275,14 @@ export class LiveFdtdView {
 
     // --- pointer interaction ------------------------------------------------------
     const gridCoords = (e: PointerEvent): [number, number] => {
+      // The unit plane is letterboxed: 1 camera unit = rect.height px,
+      // horizontally centred — so normalize x by the height, not the width.
+      // Rows render bottom-up (DataTexture flipY=false puts row 0 at the
+      // bottom of the plane), so the screen y axis is mirrored.
       const rect = fieldPanel.getBoundingClientRect();
+      const u = (e.clientX - rect.left - rect.width / 2) / rect.height + 0.5;
       const v = (e.clientY - rect.top) / rect.height;
-      const u = (e.clientX - rect.left) / rect.width;
-      return [Math.floor(v * NX), Math.floor(u * NY)];
+      return [Math.floor((1 - v) * NX), Math.floor(u * NY)];
     };
     const applyAt = (e: PointerEvent) => {
       const [gi, gj] = gridCoords(e);
