@@ -23,8 +23,9 @@ from pathlib import Path
 # Allow running from the repo root without install.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from shapely.geometry import MultiPolygon, Point, Polygon
+from shapely.geometry import MultiPolygon, Polygon
 
+from gradenna.designs import patch_design
 from gradenna.fab import (
     check_min_gap,
     check_min_width,
@@ -33,9 +34,8 @@ from gradenna.fab import (
 )
 
 # ---------------------------------------------------------------------------
-# Physical constants (mirrors benchmarks/openems_refs/geometry.py exactly)
+# Physical constants
 # ---------------------------------------------------------------------------
-C0 = 299_792_458.0
 F0 = 2.45e9
 EPS_FR4 = 4.3
 H_SUB = 1.6e-3  # m
@@ -43,24 +43,10 @@ H_SUB = 1.6e-3  # m
 MARGIN_MM = 5.0  # board margin beyond patch on each side
 
 
-def _patch_design(fr: float, eps_r: float, h: float) -> tuple[float, float, float]:
-    """Balanis TL design -- identical to geometry.py and gradenna.designs."""
-    w = C0 / (2.0 * fr) * math.sqrt(2.0 / (eps_r + 1.0))
-    eps_reff = (eps_r + 1.0) / 2.0 + (eps_r - 1.0) / 2.0 * (1.0 + 12.0 * h / w) ** -0.5
-    dl = (
-        0.412
-        * h
-        * ((eps_reff + 0.3) * (w / h + 0.264))
-        / ((eps_reff - 0.258) * (w / h + 0.8))
-    )
-    length = C0 / (2.0 * fr * math.sqrt(eps_reff)) - 2.0 * dl
-    return w, length, eps_reff
-
-
 # ---------------------------------------------------------------------------
 # Derived dimensions (all in mm)
 # ---------------------------------------------------------------------------
-_w_m, _l_m, EPS_REFF = _patch_design(F0, EPS_FR4, H_SUB)
+_w_m, _l_m, EPS_REFF = patch_design(F0, EPS_FR4, H_SUB)
 W_MM = _w_m * 1e3   # patch width  ~37.5839 mm
 L_MM = _l_m * 1e3   # patch length ~29.1383 mm
 
@@ -129,11 +115,7 @@ def _write_excellon(path: Path, holes: list[tuple[float, float, float]]) -> None
     for dia, code in sorted(tool_idx.items(), key=lambda kv: kv[1]):
         lines.append(code)
         for x, y in tools[dia]:
-            # Excellon METRIC,TZ: coordinates in 0.001 mm resolution (3 decimal places)
-            xs = f"X{x:.3f}".replace(".", "")
-            ys = f"Y{y:.3f}".replace(".", "")
-            # Actually format as XNNNNNNYNNNNNN (6.3 fixed -- but JLCPCB prefers
-            # plain decimal with dot for metric). Use dot-decimal format:
+            # METRIC,TZ with dot-decimal: JLCPCB accepts plain X23.792Y6.200 notation.
             lines.append(f"X{x:.3f}Y{y:.3f}")
     lines.append("M30")
 

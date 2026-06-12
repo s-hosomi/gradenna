@@ -26,8 +26,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-jax.config.update("jax_enable_x64", True)
-
 from gradenna import CPMLSpec, Grid2D, poynting_flux_box_2d  # noqa: E402
 from gradenna.fdtd2d import Port  # noqa: E402
 from gradenna.freq_adjoint import (  # noqa: E402

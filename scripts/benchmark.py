@@ -80,7 +80,7 @@ def main(argv=None) -> int:
 
     repeats = args.repeats if args.repeats is not None else (1 if args.quick else 3)
 
-    def bench(make_fn, src, n_cells, n_steps):
+    def bench(make_fn, src, n_cells, n_steps, repeats=repeats):
         """Best wall time of `repeats` calls after one compile/warmup call."""
         jfn = jax.jit(make_fn)
         jax.block_until_ready(jfn(src))  # compile + first run
@@ -91,7 +91,7 @@ def main(argv=None) -> int:
             best = min(best, time.perf_counter() - t0)
         return n_cells * n_steps / best / 1e6, best
 
-    def bench_native(run_fn, n_cells, n_steps):
+    def bench_native(run_fn, n_cells, n_steps, repeats=repeats):
         """Best wall time of `repeats` native (ctypes) calls after a warmup."""
         run_fn()  # warmup (build + load on first ever call)
         best = float("inf")

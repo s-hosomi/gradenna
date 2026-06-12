@@ -50,13 +50,18 @@ os.environ.setdefault("JAX_ENABLE_X64", "1")
 # ---------------------------------------------------------------------------
 
 
-def _r4(x):
-    """Round a float to 4 significant figures for compact JSON."""
+def _round_sig(x, n: int):
+    """Round *x* to *n* significant figures."""
     if x == 0.0:
         return 0.0
     mag = math.floor(math.log10(abs(x)))
-    factor = 10 ** (3 - mag)
+    factor = 10 ** (n - 1 - mag)
     return round(x * factor) / factor
+
+
+def _r4(x):
+    """Round a float to 4 significant figures for compact JSON."""
+    return _round_sig(x, 4)
 
 
 def _r4_list(arr):
@@ -66,11 +71,7 @@ def _r4_list(arr):
 
 def _r3(x):
     """Round a float to 3 significant figures."""
-    if x == 0.0:
-        return 0.0
-    mag = math.floor(math.log10(abs(x)))
-    factor = 10 ** (2 - mag)
-    return round(x * factor) / factor
+    return _round_sig(x, 3)
 
 
 def _write_json(path: Path, obj: dict) -> int:
@@ -727,8 +728,12 @@ def main(argv=None) -> int:
     else:
         print("[skip] optimization.json")
 
-    # --- 2+3+4. 3D patch runs: canonical mesh for S11 (the validated numbers),
-    # fine 0.8 mm mesh for the near-field / far-field visuals --------------------
+    # --- 2+3+4. Dual-mesh 3D patch runs ----------------------------------------
+    # S11 comes from the canonical (coarser) mesh that was used for the validated
+    # benchmark comparisons; the field data (far-field, near-field) comes from the
+    # fine 0.8 mm mesh for higher visual quality.  Do NOT swap the two: the
+    # canonical mesh's field arrays (_res_c, _grid_c, _m_c, _geom_c) are
+    # intentionally discarded here.
     if not args.skip_3d:
         print("\n=== 2/4  3D patch FDTD (canonical mesh, S11) ===")
         freqs, zin, _res_c, _grid_c, _m_c, _geom_c = run_patch_3d()
