@@ -8,8 +8,8 @@ in CI (which never imports openEMS itself).
 
 The model is the project port of the upstream ``Simple_Patch_Antenna.py``
 tutorial, rebuilt from the shared :mod:`geometry` definition so that gradenna
-and openEMS describe the same physical antenna. See ``README.md`` and
-docs/research/07 Sec. 3-4 for the workflow.
+and openEMS describe the same physical antenna. See ``README.md`` for the
+workflow.
 
 Usage
 -----

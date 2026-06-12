@@ -4,9 +4,9 @@ Why CPU and not jax-metal on Apple Silicon: jax-metal is effectively
 abandoned (the JAX project closed all jax-metal issues as "no development"
 in 2025-12, and it does not work with current macOS/jaxlib), and the
 experimental MLX-based community backends are not trustworthy for a project
-whose value rests on the numerical correctness of reverse-mode AD.  See
-docs/research/08-toolchain.md, section 5.  The native arm64 CPU backend of
-stock ``jax`` is stable and fast enough for 2D work and small 3D smoke
+whose value rests on the numerical correctness of reverse-mode AD.  The
+native arm64 CPU backend of stock ``jax`` is stable and fast enough for
+2D work and small 3D smoke
 tests, so it is the supported local backend.
 
 Measured on an Apple M1 Pro (6P+2E cores, jax/jaxlib 0.10.1), the stock

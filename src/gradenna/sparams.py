@@ -1,16 +1,16 @@
 """S-parameter extraction for lumped RVS ports.
 
-Implements the recipe of docs/research/12-port-s11-theory.md:
+The recipe is:
 
-- exact-phase DFT of the (n+1/2) dt port samples (Sec. 2.2 method 2 /
-  Sec. 5.1) — the half-step sample-time offset is folded into the DFT
-  kernel, so no time-domain averaging error is introduced;
-- Kurokawa power-wave S11 (Sec. 3.1c), identical to the openEMS
+- exact-phase DFT of the (n+1/2) dt port samples — the half-step
+  sample-time offset is folded into the DFT kernel, so no time-domain
+  averaging error is introduced;
+- Kurokawa power-wave S11 (Kurokawa 1965), identical to the openEMS
   ``calcLumpedPort`` reflection ``uf_ref/uf_inc`` and to
-  (Zin - Z0)/(Zin + Z0) (Sec. 3.2);
-- the analytic incident wave V_inc = Vs/2 of a matched RVS port
-  (Sec. 3.1b), the zero-cost reference for cross-checks;
-- the openEMS-compatible modulated-Gaussian band excitation (Sec. 4.1).
+  (Zin - Z0)/(Zin + Z0);
+- the analytic incident wave V_inc = Vs/2 of a matched RVS port, the
+  zero-cost reference for cross-checks;
+- the openEMS-compatible modulated-Gaussian band excitation.
 """
 
 from __future__ import annotations

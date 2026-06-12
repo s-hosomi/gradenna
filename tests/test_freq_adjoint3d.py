@@ -12,7 +12,7 @@ the memory-bounded two-run adjoint
 
 The reduction is exact only at *steady state*, so all tests drive a
 single-tone (CW) source with a short raised-edge turn-on and a ring-down
-window (see docs/research/16-freq-adjoint-3d-theory.md and the 2D suite).
+window (see the 2D suite).
 
 The headline case is the NTFF directivity objective
 (``loss(directivity_3d(ntff_3d(...)))``): JAX backpropagates the NTFF einsum to

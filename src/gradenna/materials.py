@@ -1,7 +1,6 @@
 """Metal/material interpolations for density-based topology optimization.
 
-Implements the metal representation fixed in docs/research/00-summary.md
-(design decision 2) and 05-metal-representation.md:
+Implements the metal representation used throughout the project:
 
 - :func:`sigma_from_density`: differentiable log-sigma interpolation between
   an air-like floor and a response-saturating cap (~1e5 S/m), the standard
@@ -27,7 +26,7 @@ __all__ = [
 
 
 def sigma_from_density(rho, sigma_min: float = 1e-4, sigma_max: float = 1e5):
-    """Log-sigma metal interpolation (note 00 decision 2 / note 05).
+    """Log-sigma metal interpolation.
 
         sigma(rho) = 10 ** ( log10(sigma_min)
                              + rho * (log10(sigma_max) - log10(sigma_min)) )
@@ -57,8 +56,7 @@ def sheet_conductivity(sigma_bulk: float, thickness: float, dz: float) -> float:
 
     A conductor of bulk conductivity ``sigma_bulk`` and physical thickness
     ``thickness`` (< dz) represented as a 1-cell-thick sheet must preserve
-    the sheet conductance sigma * t, hence (Phase 4 conductive sheet,
-    note 00 decision 2)
+    the sheet conductance sigma * t, hence
 
         sigma_eff = sigma_bulk * thickness / dz.
 

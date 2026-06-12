@@ -2,7 +2,7 @@
 
 B6 (infinitesimal dipole radiation resistance), CPML energy decay, mirror
 symmetry, AD-vs-finite-difference gradients and sqrt-N checkpointing
-equivalence. See docs/research/07-benchmarks.md and 12-port-s11-theory.md.
+equivalence.
 """
 
 import functools

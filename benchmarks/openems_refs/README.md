@@ -12,8 +12,7 @@ brew install vinn-ie/openems/csxcad vinn-ie/openems/openems --without-gui
 # use --no-build-isolation), ideally into a dedicated venv.
 ```
 
-On Linux use `update_openEMS.sh --python`, or use the community Docker image. Cross-checks follow the workflow from the project
-research notes (docs/research/07, Sec. 3–4):
+On Linux use `update_openEMS.sh --python`, or use the community Docker image. Cross-checks follow this workflow:
 
 1. Define the benchmark geometry once and generate both the gradenna and the
    openEMS model from it. The single source of truth is `geometry.py`

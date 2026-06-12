@@ -51,7 +51,7 @@ _S11_CSV = os.path.join(_REFS_DIR, "s11.csv")
 _FF_E_CSV = os.path.join(_REFS_DIR, "farfield_e.csv")
 _FF_H_CSV = os.path.join(_REFS_DIR, "farfield_h.csv")
 
-# Acceptance tolerances (docs/research/07 Sec. 4).
+# Acceptance tolerances.
 RESONANCE_TOL = 0.02       # +-2 % on the |S11| dip frequency
 S11_RMS_TOL_DB = 2.0       # RMS |S11| dB difference outside the deep null
 NULL_GUARD_DB = -10.0      # samples below this (deeper null) excluded from RMS

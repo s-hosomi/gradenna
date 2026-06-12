@@ -1,7 +1,7 @@
 """Phase 2 acceptance tests: lumped RVS port, S11 extraction, DFT monitor.
 
-References: docs/research/12-port-s11-theory.md (RVS update, power waves,
-band excitation) and the 2D line-current radiation impedance
+References: the RVS update, Kurokawa power waves and band excitation, plus
+the 2D line-current radiation impedance
 
     Ez(rho) = -(w mu I / 4) H0^(2)(k rho)   =>   Re(Zin) = w mu0 / 4 [ohm/m]
 

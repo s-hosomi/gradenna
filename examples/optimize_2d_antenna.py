@@ -3,12 +3,12 @@
 A lumped 50 ohm RVS port drives the lower-middle of an empty 280 x 280 mm
 2D TM box. Above/around the feed sits a 104 x 104 mm design region whose
 density rho is mapped to electric conductivity through the log-sigma
-interpolation of docs/research/00-summary.md / 05-metal-representation.md
+interpolation
 (`gradenna.materials.sigma_from_density`, sigma in [1e-4, 1e5] S/m)
 and optimized with the three-field scheme of gradenna.topopt (conic filter,
 tanh projection, beta continuation 8 -> 64) and optax.adam.
 
-Objective (the absorption-cheat killer of note 00, design decision 2): the
+Objective (the absorption-cheat killer): the
 *radiated* power through a Poynting contour OUTSIDE the design region at
 f0 = 2.45 GHz, normalized by the available source power |Vs|^2 / (8 Rs).
 S11 minimization would also reward dumping power into gray absorber; the

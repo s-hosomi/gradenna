@@ -1,8 +1,8 @@
-"""B10 optimization regression test (docs/research/07-benchmarks.md).
+"""B10 optimization regression test.
 
 Shrunk version of examples/optimize_2d_antenna.py: an RVS-fed design region
 whose log-sigma density is optimized to maximize the radiated power fraction
-P_rad / P_avail at 2.45 GHz (energy objective of note 00/05 — absorption
+P_rad / P_avail at 2.45 GHz (energy objective — absorption
 inside the design region cannot "cheat" because the Poynting contour sits
 outside it). The run starts from the uniform rho = 0.5 absorber blob and must
 

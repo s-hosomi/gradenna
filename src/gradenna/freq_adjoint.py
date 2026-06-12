@@ -6,11 +6,9 @@ function of the steady-state running-DFT phasors recorded by
 ``sigma`` and/or relative permittivity ``eps_r``, using **two forward
 time-stepping runs** (one forward, one adjoint) and a backward-pass memory
 footprint of only ``O(design cells x frequencies)`` -- independent of the
-number of time steps.  This is the strategy of
-docs/research/04-time-reversal-lossy.md (Strategy G) and
-docs/research/09-adjoint-theory.md (Sec. 5.2), with the all-AD
-``jax.grad(simulate_tm)`` as a machine-precision verification oracle
-(:func:`exact_design_gradient`).
+number of time steps.  This is the Meep-type time-domain adjoint, with
+the all-AD ``jax.grad(simulate_tm)`` as a machine-precision verification
+oracle (:func:`exact_design_gradient`).
 
 Excitation model
 ================
@@ -149,9 +147,9 @@ __all__ = [
 #: free-space admittance): on the unweighted Euclidean inner product that
 #: reverse-mode AD uses, this is the Yee symplectic metric ratio that
 #: converts an H-array adjoint into an E-array adjoint (strip mu0, apply
-#: eps0). Derived and verified grid-/Courant-/frequency-independent in
-#: docs/research/16 (the earlier empirical fit -7.025e-6 was a slightly
-#: biased estimate of the same constant); applied on the *unit-additive*
+#: eps0). This closed form is exact and grid-/Courant-/frequency-
+#: independent (an earlier empirical fit -7.025e-6 was a slightly biased
+#: estimate of the same constant); applied on the *unit-additive*
 #: H injection basis ``M = a/(-dt/mu0)``.
 Q_MAG = -EPS0 / MU0
 
@@ -394,11 +392,12 @@ def freq_adjoint_gradient(
     forward = _forward_solver(backend)
     dt = grid.dt
     freqs = tuple(float(f) for f in dft_freqs)
-    n_freq = len(freqs)
     env = jnp.asarray(env)
     n_steps = env.shape[0]
     om = np.asarray([2 * np.pi * f for f in freqs])
     z = np.exp(1j * om * dt)  # (K,)
+    z_arr = jnp.asarray(z)
+    half_arr = jnp.asarray(np.exp(0.5j * om * dt))
 
     eps_r, sigma = _full_eps_sigma(grid, design_sigma, design_eps_r, design_region)
 
@@ -419,9 +418,6 @@ def freq_adjoint_gradient(
     # I_hat = Ampere loop of the H phasors -- both matched to the solver to
     # ~1e-4, see tests), so a single AD pass routes V- and I-based S-parameter
     # cotangents onto dft_ez / dft_hx / dft_hy uniformly with field objectives.
-    om = np.asarray([2 * np.pi * f for f in freqs])
-    z_arr = jnp.asarray(np.exp(1j * om * dt))
-    half_arr = jnp.asarray(np.exp(0.5j * om * dt))
     port_cells = _port_cells(grid, ports)
 
     def field_objective(dft_ez, dft_hx, dft_hy):
@@ -563,12 +559,12 @@ def _ports_from_fields(dft_ez, dft_hx, dft_hy, grid, port_cells, z_arr, half_arr
 
 
 # ===========================================================================
-# 3D frequency-domain adjoint (docs/research/16-freq-adjoint-3d-theory.md)
+# 3D frequency-domain adjoint
 # ===========================================================================
 r"""3D extension.
 
-The 3D mechanism is the dimension-agnostic version of the 2D reduction above,
-made explicit in docs/research/16.  A design cell ``(i, j, k)`` carries one
+The 3D mechanism is the dimension-agnostic version of the 2D reduction above.
+A design cell ``(i, j, k)`` carries one
 ``sigma``/``eps_r`` value that is applied identically to the three E edges
 emanating from its node (``Ex(i+1/2,j,k)``, ``Ey(i,j+1/2,k)``,
 ``Ez(i,j,k+1/2)``; fdtd3d cell->edge slices), so the gradient is the **sum of

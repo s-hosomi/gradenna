@@ -1,8 +1,8 @@
 """GPU memory estimation for 3D FDTD adjoint runs.
 
-Codifies the memory model of ``docs/research/08-toolchain.md`` (section 1)
-for the actual `gradenna.fdtd3d.simulate_3d` state layout, so a run can be
-sized against a given GPU *before* it is launched:
+Codifies the memory model for the actual `gradenna.fdtd3d.simulate_3d`
+state layout, so a run can be sized against a given GPU *before* it is
+launched:
 
 - forward state: the six Yee field components plus the twelve CPML psi
   accumulators (reported both for full-grid psi arrays, the conservative
@@ -12,8 +12,7 @@ sized against a given GPU *before* it is launched:
   components, which travel inside the scan carry and are therefore
   duplicated by every checkpoint snapshot;
 - reverse-mode AD: the naive all-steps bound and the sqrt-N checkpointing
-  peak ``(K + n_steps/K) * state`` of ``checkpoint_segments=K``
-  (research note 08, section 1.1).
+  peak ``(K + n_steps/K) * state`` of ``checkpoint_segments=K``.
 
 All numbers are first-order array-size accounting: XLA temporaries can add
 a factor ~1.5-2x on top, so keep headroom (the GPU-fit helper defaults to

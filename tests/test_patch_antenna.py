@@ -1,4 +1,4 @@
-"""B9 benchmark: rectangular microstrip patch antenna (docs/research/07 sec. 3).
+"""B9 benchmark: rectangular microstrip patch antenna.
 
 Two-stage validation of the full 3D antenna stack — finite ground plane,
 lossy FR-4 substrate, PEC patch sheet and a probe (RVS) feed:
@@ -15,9 +15,9 @@ lossy FR-4 substrate, PEC patch sheet and a probe (RVS) feed:
    design equations' own accuracy (a few %), and the feed/sheet
    discretization systematics below.
 
-FR-4 material model (docs/research/06 sec. B): constant eps_r plus a
-constant conductivity converted from the loss tangent at the design
-frequency, sigma = 2 pi f0 eps0 eps_r_model tan_d.
+FR-4 material model: constant eps_r plus a constant conductivity
+converted from the loss tangent at the design frequency,
+sigma = 2 pi f0 eps0 eps_r_model tan_d.
 
 Thin-sheet metal and the pin-layer compensation
 -----------------------------------------------
@@ -56,7 +56,7 @@ from gradenna.designs import patch_design
 from gradenna.fdtd3d import Grid3D, port_impedance, simulate_3d
 from gradenna.sparams import gaussian_pulse_for_band
 
-# Design target: 2.45 GHz patch on FR-4 (docs/research/06 sec. B-6).
+# Design target: 2.45 GHz patch on FR-4.
 F0 = 2.45e9
 EPS_FR4 = 4.3
 H_SUB = 1.6e-3

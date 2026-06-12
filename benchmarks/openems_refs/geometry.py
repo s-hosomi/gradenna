@@ -4,8 +4,8 @@ Both the gradenna model (``tests/test_openems_refs.py``) and the openEMS
 reference generator (``generate_patch_refs.py``) build their mesh from the
 constants and helpers defined here, so the two simulations describe the
 *same physical antenna*. The numbers mirror the 2.45 GHz FR-4 patch of
-``tests/test_patch_antenna.py`` (docs/research/06 Sec. B-6, docs/research/07
-Sec. 3); they are duplicated here rather than imported so that this module
+``tests/test_patch_antenna.py``; they are duplicated here rather than
+imported so that this module
 stays a self-contained, dependency-light description that the openEMS side
 (which has no gradenna on its PYTHONPATH) can also consume.
 

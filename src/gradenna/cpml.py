@@ -62,11 +62,10 @@ class PsiSlabs(NamedTuple):
 
     psi_w (the auxiliary variable of the stretched axis w) is identically
     zero outside the PML because c_w = 0 there, so only the two slabs of
-    `thickness` samples at each end of axis w need storage. This is the
-    strip storage of docs/research/14-cpml-theory.md Sec. 5.3: with full
-    arrays the psi set adds ~133% to the 2D scan carry (and ~200% in 3D),
-    with strips only a few percent — which is what keeps the reverse-mode
-    AD tape affordable on a GPU.
+    `thickness` samples at each end of axis w need storage. With full
+    arrays the psi set adds ~133% to the 2D scan carry (and ~200% in 3D);
+    storing only the slabs costs a few percent instead — which is what
+    keeps the reverse-mode AD tape affordable on a GPU.
     """
 
     lo: jnp.ndarray
@@ -86,9 +85,9 @@ class SlabCoefficients(NamedTuple):
 def slab_slices(n: int, thickness: int) -> tuple[slice, slice]:
     """Static low/high PML slab slices along an axis with `n` sample positions.
 
-    Outside these two slabs c_w = 0 and psi_w stays identically zero
-    (docs/research/14-cpml-theory.md Sec. 5.3), so psi values and their
-    b/c tables are only kept on `thickness` samples per side. With
+    Outside these two slabs c_w = 0 and psi_w stays identically zero, so
+    psi values and their b/c tables are only kept on `thickness` samples
+    per side. With
     ``thickness=0`` (PEC box) both slices are empty and every slab
     operation degenerates to a no-op on zero-size arrays.
     """
@@ -176,6 +175,10 @@ def axis_coefficients(
     for the E-field psi); with ``half=True`` at i+1/2 (length n-1, for the
     H-field psi). Outside the layer sigma = 0 and c = 0, so psi stays
     identically zero and the update reduces exactly to the plain Yee scheme.
+
+    ``eps_r_bg`` is a manual override of the background relative permittivity
+    used to scale ``sigma_max`` when the medium adjacent to the PML is a
+    dielectric rather than vacuum; no in-tree benchmark exercises it.
     """
     npml = spec.thickness
     float_dtype = dtype if dtype is not None else jnp.result_type(float)

@@ -11,8 +11,8 @@ Three groups:
    gradient finite and non-trivial and (b) increase the radiated power. Kept
    small enough to run in well under 90 s on CPU (``fast``); the slower
    binarization-trend check is marked ``slow``.
-3. ``gradenna.estimate``: the memory model must reproduce the order of
-   magnitude of docs/research/08 and order the cost layers sensibly.
+3. ``gradenna.estimate``: the memory model must reproduce the expected
+   order of magnitude and order the cost layers sensibly.
 """
 
 import math
@@ -274,8 +274,8 @@ class TestReduced3DOptimization:
 
 class TestMemoryEstimate:
     def test_doc_table_order_of_magnitude(self):
-        """docs/research/08 1.3: 82x82x51, Nt=2000, fp32 ~ tens of GB naive,
-        ~1-2 GB checkpointed."""
+        """Memory-model order of magnitude: 82x82x51, Nt=2000, fp32 ~ tens
+        of GB naive, ~1-2 GB checkpointed."""
         g = Grid3D(nx=82, ny=82, nz=51, dx=1.3e-3, dy=1.3e-3, dz=1.3e-3)
         est = fdtd3d_memory_estimate(
             g, 2000, n_dft_freqs=0, dtype="float32", cpml_thickness=10
