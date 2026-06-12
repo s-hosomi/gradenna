@@ -358,6 +358,7 @@ def freq_adjoint_gradient(
     source_current=None,
     ports=(),
     cpml: CPMLSpec = CPMLSpec(),
+    backend: str = "xla",
 ):
     """Memory-bounded frequency-domain adjoint gradient of ``objective``.
 
@@ -368,9 +369,20 @@ def freq_adjoint_gradient(
     ``env`` (shape ``(n_steps,)``, e.g. a raised-cosine ramp); ``env`` is
     reused to window the adjoint source and to form ``N_eff = sum env^2``.
 
+    ``backend`` selects the time-stepping engine for the *forward and adjoint
+    field solves only*: ``"xla"`` (default) uses :func:`simulate_tm`;
+    ``"native"`` uses the fused Rust kernel
+    (:func:`gradenna.native.simulate_tm_native`) when available, falling back
+    to XLA otherwise. Both produce the same complex128 DFT phasors that drive
+    the numpy gradient contraction, so the gradient is unchanged (the field
+    solves feed only the contraction, not autodiff -- the cotangent step is a
+    separate, always-XLA ``jax.grad`` over post-processing). Use ``"native"``
+    to cut the dominant time-loop cost on CPU.
+
     Returns a dict with keys ``"sigma"`` / ``"eps_r"`` (only those supplied),
     matching :func:`exact_design_gradient`.
     """
+    forward = _forward_solver(backend)
     dt = grid.dt
     freqs = tuple(float(f) for f in dft_freqs)
     n_freq = len(freqs)
@@ -382,7 +394,7 @@ def freq_adjoint_gradient(
     eps_r, sigma = _full_eps_sigma(grid, design_sigma, design_eps_r, design_region)
 
     # ---- forward run: design-region phasors -------------------------------
-    fwd = simulate_tm(
+    fwd = forward(
         grid,
         source_ij=source_ij,
         source_current=source_current,
@@ -390,7 +402,6 @@ def freq_adjoint_gradient(
         sigma=sigma,
         ports=ports,
         dft_freqs=freqs,
-        dft_dtype=jnp.complex128,
         cpml=cpml,
     )
     # ---- cotangents of the objective (cheap post-processing AD) -----------
@@ -421,7 +432,7 @@ def freq_adjoint_gradient(
     jz_idx, jz_wave, mx_idx, mx_wave, my_idx, my_wave = _adjoint_source_waveforms(
         grid, freqs, env, cot
     )
-    adj = simulate_tm(
+    adj = forward(
         grid,
         source_ij=(jz_idx if jz_idx is not None else None),
         source_current=(jz_wave if jz_idx is not None else None),
@@ -432,7 +443,6 @@ def freq_adjoint_gradient(
         my_ij=(my_idx if my_idx is not None else None),
         my_current=(my_wave if my_idx is not None else None),
         dft_freqs=freqs,
-        dft_dtype=jnp.complex128,
         cpml=cpml,
     )
 
@@ -476,6 +486,39 @@ def freq_adjoint_gradient(
     if design_eps_r is not None:
         grads["eps_r"] = contract(EPS0 * dca_deps, EPS0 * dcb_deps)
     return grads
+
+
+def _forward_solver(backend: str):
+    """Return a forward field-solve callable for the requested backend.
+
+    Both variants accept the keyword subset used by the adjoint driver
+    (source/mx/my currents, eps_r, sigma, ports, dft_freqs, cpml) and return
+    an object exposing ``dft_ez/dft_hx/dft_hy`` (and ``port_v/port_i`` when
+    ports are given) as complex128 phasors. ``"native"`` silently falls back
+    to XLA when the Rust kernel is unavailable.
+    """
+    if backend not in ("xla", "native"):
+        raise ValueError(f"backend must be 'xla' or 'native', got {backend!r}")
+
+    use_native = False
+    if backend == "native":
+        from gradenna import native
+
+        use_native = native.is_available()
+
+    if use_native:
+        from gradenna import native
+
+        def solve(grid, **kw):
+            # f64 fields with f64 DFT accumulators == dft_dtype=complex128.
+            return native.simulate_tm_native(grid, dtype="float64", **kw)
+
+        return solve
+
+    def solve(grid, **kw):
+        return simulate_tm(grid, dft_dtype=jnp.complex128, **kw)
+
+    return solve
 
 
 def _port_cells(grid, ports):

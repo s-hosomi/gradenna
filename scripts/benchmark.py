@@ -55,6 +55,9 @@ def parse_args(argv=None):
                    help="preset passed to recommended_env (default: auto)")
     p.add_argument("--repeats", type=int, default=None,
                    help="timed repeats per case (default: 3, --quick: 1)")
+    p.add_argument("--backend", default="xla", choices=("xla", "native"),
+                   help="2D solver backend: xla (default) or native (Rust "
+                        "fused kernel; skipped with a message if unavailable)")
     return p.parse_args(argv)
 
 
@@ -88,6 +91,16 @@ def main(argv=None) -> int:
             best = min(best, time.perf_counter() - t0)
         return n_cells * n_steps / best / 1e6, best
 
+    def bench_native(run_fn, n_cells, n_steps):
+        """Best wall time of `repeats` native (ctypes) calls after a warmup."""
+        run_fn()  # warmup (build + load on first ever call)
+        best = float("inf")
+        for _ in range(repeats):
+            t0 = time.perf_counter()
+            run_fn()
+            best = min(best, time.perf_counter() - t0)
+        return n_cells * n_steps / best / 1e6, best
+
     def waveform(grid, n_steps, dtype):
         t = (np.arange(n_steps) + 0.5) * grid.dt
         return jnp.asarray(gaussian_derivative(t, 20 * grid.dt, 6 * grid.dt), dtype)
@@ -95,6 +108,22 @@ def main(argv=None) -> int:
     def case_2d(n, n_steps, dtype):
         g = Grid2D(n, n, 1e-3, 1e-3)
         src = waveform(g, n_steps, dtype)
+
+        if args.backend == "native":
+            import numpy as _np
+
+            from gradenna import native
+            if not native.is_available():
+                return None, None
+            src_np = _np.asarray(src)
+
+            def run():
+                native.simulate_tm_native(
+                    g, source_ij=(n // 2, n // 2), source_current=src_np,
+                    probe_ij=((n // 4, n // 4),), dtype=_np.dtype(dtype.__name__))
+
+            return bench_native(run, n * n, n_steps)
+
         eps = jnp.ones((n, n), dtype)
         sig = jnp.zeros((n, n), dtype)
 
@@ -123,15 +152,28 @@ def main(argv=None) -> int:
     else:
         cases = [("2D 256^2 x 1000", case_2d, 256, 1000), ("3D 64^3 x 300", case_3d, 64, 300)]
 
-    print(f"backend: {jax.default_backend()}  devices: {jax.devices()}")
+    print(f"backend: {jax.default_backend()}  devices: {jax.devices()}  solver: {args.backend}")
     print(f"jax {jax.__version__}, repeats={repeats}, "
           f"env preset: {'OFF' if args.env_off else applied or '(nothing to set)'}")
+    if args.backend == "native":
+        from gradenna import native
+        if not native.is_available():
+            print("native solver unavailable (cargo missing / build failed); "
+                  "run scripts/build_kernel.sh. Skipping.")
+            return 0
     header = f"{'case':<18} {'dtype':<8} {'Mcell-steps/s':>14} {'best time':>11}"
     print(header)
     print("-" * len(header))
     for name, runner, n, n_steps in cases:
+        # The native solver is 2D-only; skip 3D cases for it.
+        if args.backend == "native" and runner is case_3d:
+            print(f"{name:<18} {'-':<8} {'(native: 2D only)':>14}")
+            continue
         for dtype in (jnp.float32, jnp.float64):
             mcs, sec = runner(n, n_steps, dtype)
+            if mcs is None:
+                print(f"{name:<18} {jnp.dtype(dtype).name:<8} {'(unavailable)':>14}")
+                continue
             print(f"{name:<18} {jnp.dtype(dtype).name:<8} {mcs:>14.1f} {sec * 1e3:>9.0f} ms")
     return 0
 

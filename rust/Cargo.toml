@@ -1,0 +1,18 @@
+[package]
+name = "gradenna_kernel"
+version = "0.1.0"
+edition = "2021"
+description = "Fused 2D TM FDTD time-loop kernel for gradenna (local acceleration)."
+
+[lib]
+# cdylib so Python (ctypes) can dlopen it; rlib so unit tests can link it.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rayon = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"

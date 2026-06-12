@@ -20,6 +20,9 @@ venv/
 *.ckpt
 wandb/
 
+# Rust ネイティブカーネル（オプショナルなローカル加速ビルド）
+rust/target/
+
 # OS / エディタ
 .DS_Store
 .idea/

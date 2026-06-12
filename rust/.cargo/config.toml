@@ -1,0 +1,8 @@
+# Host-CPU codegen for the FDTD kernel: emits NEON/FMA on Apple silicon (and
+# AVX/FMA on x86) so the inner field sweeps auto-vectorize. This config is
+# picked up whether the crate is built via scripts/build_kernel.sh or the lazy
+# auto-build in gradenna.native (both run `cargo build` with this dir as the
+# manifest's parent). It is a leaf crate (cdylib/rlib used only locally), so
+# pinning the host CPU does not affect any downstream consumer.
+[build]
+rustflags = ["-C", "target-cpu=native"]
