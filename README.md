@@ -50,6 +50,7 @@ Every physics component is tested against analytic solutions and textbook refere
 | Infinitesimal dipole radiation resistance vs 80π²(l/λ)² | 0.34% after gap de-embedding |
 | Dipole directivity via NTFF vs D₀ = 1.5 | 0.14% |
 | 2.45 GHz FR-4 patch resonance vs Balanis design equations | −2.5% |
+| 2.45 GHz patch vs openEMS (committed reference data) | resonance 0.83%, \|S11\| RMS 0.51 dB, pattern corr ≥ 0.999 |
 | `jax.grad` vs finite differences (all parameter classes) | ≤ 1e-4 relative |
 | Checkpointed vs plain adjoint | bit-identical outputs |
 
@@ -96,7 +97,8 @@ A 50×50 design region has 2500 degrees of freedom. Gradient-free methods (GA, p
 - [x] GPU memory optimization (PML-slab ψ storage, √N checkpointing, float32 objectives), 3D topology optimization
 - [x] Frequency-domain adjoint (gradient = two forward runs, no time tape) and fused Rust CPU kernels, both in 2D and 3D
 - [x] Design-region-limited DFT monitors (unlocks kernel speedup for DFT-heavy 3D gradients)
-- [ ] openEMS cross-check reference data, PCB fabrication + NanoVNA measurement campaign
+- [x] openEMS cross-check reference data (committed CSVs, compared in CI)
+- [ ] PCB fabrication + NanoVNA measurement campaign
 
 ## License
 
