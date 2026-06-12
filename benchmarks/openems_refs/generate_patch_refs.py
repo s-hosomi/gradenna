@@ -155,22 +155,32 @@ def build_and_run(sim_dir: str, resolution: int, end_criteria: float = 1e-4):
     # --- openEMS FDTD object ------------------------------------------------
     fdtd = openEMS(NrTS=60000, EndCriteria=end_criteria)
     fdtd.SetGaussExcite(0.5 * (f_start + f_stop), 0.5 * (f_stop - f_start))
-    fdtd.SetBoundaryCond(["MUR"] * 6)  # simple absorbing box; swap to PML if built
+    fdtd.SetBoundaryCond(["PML_8"] * 6)
 
     csx = ContinuousStructure()
     fdtd.SetCSX(csx)
     mesh = csx.GetGrid()
-    mesh.SetDeltaUnit(1.0)  # work in metres
+    # Work in millimetres (SetDeltaUnit=1e-3).  This matches the upstream
+    # Simple_Patch_Antenna.py tutorial convention and is required for
+    # CSXCAD to correctly discretise zero-thickness metal boxes (patch/gnd):
+    # with delta-unit = 1 m, the tiny substrate height (1.6 mm = 0.0016 m)
+    # pushes the internal cell-snapping tolerance into floating-point noise,
+    # causing a "Unused primitive" warning and the patch being invisible to
+    # the FDTD operator.  With delta-unit = 1e-3 m, all coordinates are in
+    # millimetres and the snapping is numerically clean.
+    mesh.SetDeltaUnit(1e-3)  # work in millimetres
 
-    # Convenience dimensions from the shared geometry (all in metres).
-    W, L = geo.patch_w, geo.patch_l
-    h = geo.h_sub
-    sub_w, sub_l = geo.sub_w, geo.sub_l
-    feed_inset = geo.feed_offset_y()
+    # Convenience dimensions from the shared geometry, converted to mm.
+    W   = geo.patch_w  * 1e3
+    L   = geo.patch_l  * 1e3
+    h   = geo.h_sub    * 1e3
+    sub_w = geo.sub_w  * 1e3
+    sub_l = geo.sub_l  * 1e3
+    feed_inset = geo.feed_offset_y() * 1e3
 
     # --- materials & primitives (Simple_Patch_Antenna.py layout) -----------
     # Patch in the z = h plane, centred in x, offset so its near edge (-y) is
-    # the feed edge; substrate 0..h; ground at z = 0.
+    # the feed edge; substrate 0..h; ground at z = 0.  All coordinates in mm.
     patch = csx.AddMetal("patch")
     patch.AddBox(priority=10, start=[-W / 2, -L / 2, h], stop=[W / 2, L / 2, h])
 
@@ -186,6 +196,7 @@ def build_and_run(sim_dir: str, resolution: int, end_criteria: float = 1e-4):
 
     # Probe feed: a lumped port from ground to patch at (x = 0, y = feed edge
     # + inset). openEMS' AddLumpedPort handles excitation + de-embedded S11.
+    # edges2grid='xy' snaps the port column to the mesh in x and y.
     feed_y = -L / 2 + feed_inset
     port = fdtd.AddLumpedPort(
         port_nr=1,
@@ -195,24 +206,54 @@ def build_and_run(sim_dir: str, resolution: int, end_criteria: float = 1e-4):
         p_dir="z",
         excite=1.0,
         priority=5,
+        edges2grid="xy",
     )
 
-    # --- mesh (thirds rule around metal edges) ------------------------------
+    # --- mesh ---------------------------------------------------------------
+    # Target cell size in mm (at the upper band edge inside the substrate).
     lambda0_sub = OEMS_C0 / f_stop / math.sqrt(geo.eps_r)
-    res = lambda0_sub / resolution
-    third = res / 3.0
-    mesh.AddLine("x", [-sub_w / 2, sub_w / 2, -W / 2, W / 2, 0.0])
-    mesh.AddLine("y", [-sub_l / 2, sub_l / 2, -L / 2, L / 2, feed_y])
-    mesh.AddLine("z", [0.0, h])
-    # Air box and absorbing-boundary padding ~ lambda0/4 around the structure.
-    air = OEMS_C0 / f0 / 4.0
+    res = lambda0_sub / resolution * 1e3  # mm
+
+    # Air-box padding: lambda0/4 at centre frequency (in mm).
+    air = OEMS_C0 / f0 / 4.0 * 1e3  # mm
+
+    # Simulation-domain bounds.
     mesh.AddLine("x", [-sub_w / 2 - air, sub_w / 2 + air])
     mesh.AddLine("y", [-sub_l / 2 - air, sub_l / 2 + air])
     mesh.AddLine("z", [-air, h + air])
-    mesh.SmoothMeshLines("all", res)
-    mesh.SmoothMeshLines("z", min(third, h / 3.0))  # resolve the thin substrate
 
-    # --- near-field-to-far-field box ---------------------------------------
+    # Substrate z-cells: explicit linspace so z=0 and z=h are exact grid nodes
+    # and the substrate is resolved by a fixed number of cells (4 matches the
+    # tutorial; coarse but sufficient for this thin FR-4 slab).
+    substrate_cells = 4
+    mesh.AddLine("z", np.linspace(0, h, substrate_cells + 1))
+
+    # AddEdges2Grid adds thirds-rule offset lines around each metal edge in the
+    # xy-plane so that patch/ground edges align with Yee-cell faces rather than
+    # cell centres.  This is the canonical openEMS approach for flat metal sheets
+    # and is required to avoid the "Unused primitive" warning for the patch.
+    fdtd.AddEdges2Grid(dirs="xy", properties=patch, metal_edge_res=res / 2)
+    fdtd.AddEdges2Grid(dirs="xy", properties=gnd)
+
+    # Smooth all axes to the target resolution (factor 1.4 matches tutorial).
+    mesh.SmoothMeshLines("all", res, 1.4)
+
+    # Extend the patch box by one air cell in z to fix a CSXCAD floating-point
+    # grid-snap issue.  After SmoothMeshLines the z=h seed line may drift by
+    # ~1e-15 mm, causing CSXCAD to report "Unused primitive" because the
+    # zero-thickness box cannot be snapped to that grid face.  Extending the
+    # patch stop_z to the first grid line above h (the next air cell boundary)
+    # makes the box volumetric and robust against sub-ULP seed drift.  The
+    # physical effect is negligible: the added cell is in free air, << lambda.
+    z_lines = sorted(mesh.GetLines("z"))
+    z_above_h = [z for z in z_lines if z > h + 1e-12]
+    if z_above_h:
+        patch_stop_z = z_above_h[0]
+        # Modify the existing box in-place (CSXCAD primitives have SetStop).
+        patch_box = patch.GetAllPrimitives()[0]
+        patch_box.SetStop([W / 2, L / 2, patch_stop_z])
+
+    # --- near-field-to-far-field box ----------------------------------------
     nf2ff = fdtd.CreateNF2FFBox()
 
     # --- run ----------------------------------------------------------------
@@ -226,9 +267,11 @@ def build_and_run(sim_dir: str, resolution: int, end_criteria: float = 1e-4):
     s11 = port.uf_ref / port.uf_inc          # de-embedded reflection coefficient
 
     # Far-field cuts at f0: E-plane (phi = 90 deg, y-z) and H-plane (phi = 0).
+    # NF2FF centre at mid-substrate height (convert back to metres for CalcNF2FF).
+    h_m = geo.h_sub
     theta = np.linspace(-90.0, 90.0, 181)
-    ff_e = nf2ff.CalcNF2FF(sim_dir, f0, theta, [90.0], center=[0, 0, h / 2])
-    ff_h = nf2ff.CalcNF2FF(sim_dir, f0, theta, [0.0], center=[0, 0, h / 2])
+    ff_e = nf2ff.CalcNF2FF(sim_dir, f0, theta, [90.0], center=[0, 0, h_m / 2])
+    ff_h = nf2ff.CalcNF2FF(sim_dir, f0, theta, [0.0],  center=[0, 0, h_m / 2])
     e_e = np.abs(np.asarray(ff_e.E_norm[0]).reshape(-1))
     e_h = np.abs(np.asarray(ff_h.E_norm[0]).reshape(-1))
     e_e_db = 20.0 * np.log10(np.maximum(e_e, 1e-30) / np.max(e_e))
@@ -244,15 +287,15 @@ def build_and_run(sim_dir: str, resolution: int, end_criteria: float = 1e-4):
         "ny": int(mesh.GetQtyLines("y")),
         "nz": int(mesh.GetQtyLines("z")),
         "f0_Hz": f0,
-        "patch_W_m": W,
-        "patch_L_m": L,
-        "h_sub_m": h,
+        "patch_W_m": geo.patch_w,
+        "patch_L_m": geo.patch_l,
+        "h_sub_m": geo.h_sub,
         "eps_r": geo.eps_r,
         "tan_d": geo.tan_d,
         "kappa_sub_S_per_m": geo.conductivity_sub,
         "R_port_ohm": R_PORT,
         "compare_band_Hz": COMPARE_BAND,
-        "boundary": "MUR",
+        "boundary": "PML_8",
     }
     return {
         "freqs": np.asarray(freqs),
@@ -339,7 +382,12 @@ def main(argv=None) -> int:
 
     import tempfile
 
-    sim_dir = args.sim_dir or tempfile.mkdtemp(prefix="openems_patch_")
+    # openEMS' Run() chdirs into the simulation directory, so a relative
+    # --outdir would silently land there; resolve both up front.
+    args.outdir = os.path.abspath(args.outdir)
+    sim_dir = os.path.abspath(args.sim_dir) if args.sim_dir else tempfile.mkdtemp(
+        prefix="openems_patch_"
+    )
     result = build_and_run(sim_dir, args.resolution, args.end_criteria)
     written = write_all(args.outdir, result)
     print("Wrote openEMS reference CSVs:")
