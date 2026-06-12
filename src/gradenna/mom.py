@@ -1,9 +1,9 @@
 r"""Differentiable thin-wire Method of Moments (MoM) backend.
 
 A fully ``jax``-differentiable Method of Moments solver for a straight,
-center-fed, z-directed thin wire (linear dipole).  This is the minimal
-skeleton requested as a Phase 5 extension (see ``docs/research/06`` on the
-feasibility of a differentiable MoM route).
+center-fed, z-directed thin wire (linear dipole).  This is a minimal
+differentiable-MoM backend offered as a fast PEC surrogate alongside the
+FDTD solvers.
 
 Formulation
 -----------
@@ -63,8 +63,8 @@ Relation to the FDTD backend
 This MoM backend models perfectly conducting wires in free space.  It is a
 fast surrogate for PEC structures (no substrate); extending it to planar
 antennas on a dielectric (e.g. FR-4) requires layered-media Green's functions
-(MPIE + Sommerfeld integrals / DCIM), which is left as future work
-(``docs/research/06``, theme A).  For substrate-bearing structures the FDTD
+(MPIE + Sommerfeld integrals / DCIM), which is left as future work.
+For substrate-bearing structures the FDTD
 backend (:mod:`gradenna.fdtd2d`, :mod:`gradenna.fdtd3d`) remains the route.
 
 References
@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import functools
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -96,6 +97,28 @@ __all__ = [
 # tensor-product reaction quadrature.  80 is comfortably converged for the
 # thin-wire dipole over the radii of interest (a/lambda ~ 1e-3 ... 1e-2).
 _DEFAULT_NQ = 80
+
+
+def _require_x64() -> None:
+    """Raise a clear RuntimeError when JAX x64 mode is disabled.
+
+    The near-singular EFIE matrix solve requires float64 arithmetic.  With the
+    default float32 JAX backend, ``jnp.asarray(..., dtype=jnp.float64)``
+    silently truncates to float32, leading to degraded (or wrong) results.
+    Call this at the top of every public entry point.
+
+    To enable x64 either set the environment variable ``JAX_ENABLE_X64=1``
+    before starting Python, or call
+    ``jax.config.update("jax_enable_x64", True)`` before importing gradenna.
+    """
+    if not jax.config.jax_enable_x64:
+        raise RuntimeError(
+            "gradenna.mom requires 64-bit floating point (the EFIE solve is "
+            "near-singular in float32).  Enable x64 before importing gradenna "
+            "by setting the environment variable JAX_ENABLE_X64=1 or by "
+            'calling jax.config.update("jax_enable_x64", True) at program '
+            "start."
+        )
 
 
 @functools.lru_cache(maxsize=8)
@@ -145,6 +168,7 @@ def wire_impedance_matrix(length, radius, freq, n_modes, nq: int = _DEFAULT_NQ):
     Z : complex jnp.ndarray, shape (n_modes, n_modes)
         Symmetric (reciprocal) impedance matrix [ohm].
     """
+    _require_x64()
     k = 2.0 * jnp.pi * freq / C0
     d = length / (n_modes + 1)
     nodes = -length / 2.0 + (jnp.arange(n_modes) + 1) * d  # (N,)
@@ -187,6 +211,7 @@ def wire_dipole_input_current(
     voltage.  ``n_modes`` must be odd so that a mode sits exactly at the
     feed point (the wire center).
     """
+    _require_x64()
     if n_modes % 2 == 0:
         raise ValueError("n_modes must be odd so a mode is centered at the feed.")
     z_mat = wire_impedance_matrix(length, radius, freq, n_modes, nq=nq)
@@ -196,7 +221,7 @@ def wire_dipole_input_current(
     return current[feed]
 
 
-def wire_dipole_impedance(length, radius, freqs, n_segments: int = 39, nq: int = _DEFAULT_NQ):
+def wire_dipole_impedance(length, radius, freqs, n_modes: int = 39, nq: int = _DEFAULT_NQ):
     """Input impedance ``Zin(f)`` of a center-fed straight thin-wire dipole.
 
     Delta-gap excitation; ``Zin = V_feed / I_feed = 1 / I_feed`` for unit feed
@@ -210,7 +235,7 @@ def wire_dipole_impedance(length, radius, freqs, n_segments: int = 39, nq: int =
         Wire radius ``a`` [m].
     freqs : float or array_like
         Frequency or frequencies [Hz].
-    n_segments : int, optional
+    n_modes : int, optional
         Number of PWS modes (unknowns).  Must be odd (a mode is placed at the
         feed).  Default 39 gives ~1% input-impedance convergence for the
         half-wave dipole.
@@ -223,10 +248,11 @@ def wire_dipole_impedance(length, radius, freqs, n_segments: int = 39, nq: int =
         Input impedance [ohm]; scalar for scalar ``freqs``, else one per
         frequency.
     """
+    _require_x64()
     freqs_arr = jnp.atleast_1d(jnp.asarray(freqs, dtype=jnp.float64))
 
     def _one(f):
-        return 1.0 / wire_dipole_input_current(length, radius, f, n_modes=n_segments, nq=nq)
+        return 1.0 / wire_dipole_input_current(length, radius, f, n_modes=n_modes, nq=nq)
 
     # Loop in Python over the (typically few) frequencies; each is an
     # independent, fully differentiable solve.

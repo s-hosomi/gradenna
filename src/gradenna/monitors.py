@@ -91,7 +91,10 @@ def log_radiated_fraction(p_rad, p_avail):
 
     Args:
         p_rad: radiated power (e.g. a `poynting_flux_box_2d` entry), > 0.
-        p_avail: available source power |Vs_hat|^2 / (8 Rs), > 0.
+        p_avail: available source power ``|Vs_hat|^2 / (8 Rs)``, > 0.
+            Equivalently, ``|V_inc|^2 / (2 Rs)`` where
+            ``V_inc = sparams.incident_voltage(Vs_hat) = Vs_hat / 2``
+            (both expressions are the standard matched-load available power).
 
     Returns:
         ``log(P_rad) - log(P_avail)``, the same dtype-promoted shape as the

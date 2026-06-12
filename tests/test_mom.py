@@ -43,7 +43,7 @@ A_OVER_LAM = 1e-3  # thin wire, ~ lambda/1000
 # ---------------------------------------------------------------------------
 def test_halfwave_dipole_impedance_order_of_magnitude():
     """0.5 lambda dipole: Re ~ 70-95 ohm, Im positive (inductive, near resonance)."""
-    zin = complex(wire_dipole_impedance(0.5 * LAM, A_OVER_LAM * LAM, F0, n_segments=41))
+    zin = complex(wire_dipole_impedance(0.5 * LAM, A_OVER_LAM * LAM, F0, n_modes=41))
     # Thin-wire PWS-Galerkin settles ~85 ohm; classic idealized value is 73 ohm.
     assert 65.0 < zin.real < 95.0, f"Re(Zin)={zin.real}"
     # At 0.5 lambda the dipole is slightly above resonance -> inductive (Im > 0),
@@ -53,8 +53,8 @@ def test_halfwave_dipole_impedance_order_of_magnitude():
 
 def test_resonant_length_imag_crossing():
     """Im(Zin) changes sign through zero in the classic 0.47-0.48 lambda window."""
-    lo = complex(wire_dipole_impedance(0.47 * LAM, A_OVER_LAM * LAM, F0, n_segments=41))
-    hi = complex(wire_dipole_impedance(0.48 * LAM, A_OVER_LAM * LAM, F0, n_segments=41))
+    lo = complex(wire_dipole_impedance(0.47 * LAM, A_OVER_LAM * LAM, F0, n_modes=41))
+    hi = complex(wire_dipole_impedance(0.48 * LAM, A_OVER_LAM * LAM, F0, n_modes=41))
     assert lo.imag < 0.0, f"Im at 0.47 lambda should be capacitive, got {lo.imag}"
     assert hi.imag > 0.0, f"Im at 0.48 lambda should be inductive, got {hi.imag}"
 
@@ -63,14 +63,14 @@ def test_resonant_length_imag_crossing():
     a, b = 0.47, 0.48
     for _ in range(25):
         m = 0.5 * (a + b)
-        zm = complex(wire_dipole_impedance(m * LAM, A_OVER_LAM * LAM, F0, n_segments=41))
+        zm = complex(wire_dipole_impedance(m * LAM, A_OVER_LAM * LAM, F0, n_modes=41))
         if zm.imag > 0.0:
             b = m
         else:
             a = m
     l_res = 0.5 * (a + b)
     assert 0.46 < l_res < 0.49, f"resonant length {l_res} lambda out of range"
-    zr = complex(wire_dipole_impedance(l_res * LAM, A_OVER_LAM * LAM, F0, n_segments=41))
+    zr = complex(wire_dipole_impedance(l_res * LAM, A_OVER_LAM * LAM, F0, n_modes=41))
     assert abs(zr.imag) < 1.0, f"Im at resonance not ~0: {zr.imag}"
     assert 55.0 < zr.real < 85.0, f"Re at resonance {zr.real} ohm unphysical"
 
@@ -78,10 +78,10 @@ def test_resonant_length_imag_crossing():
 # ---------------------------------------------------------------------------
 # 2. Convergence in the number of modes.
 # ---------------------------------------------------------------------------
-def test_convergence_with_n_segments():
+def test_convergence_with_n_modes():
     """Doubling the mode count shrinks the change in Zin (Cauchy convergence)."""
     z = [
-        complex(wire_dipole_impedance(0.5 * LAM, A_OVER_LAM * LAM, F0, n_segments=n))
+        complex(wire_dipole_impedance(0.5 * LAM, A_OVER_LAM * LAM, F0, n_modes=n))
         for n in (21, 41, 81)
     ]
     d1 = abs(z[1] - z[0])
@@ -98,7 +98,7 @@ def test_gradient_re_zin_wrt_length():
 
     def re_zin(length):
         return jnp.real(
-            wire_dipole_impedance(length, A_OVER_LAM * LAM, F0, n_segments=n_seg)
+            wire_dipole_impedance(length, A_OVER_LAM * LAM, F0, n_modes=n_seg)
         )
 
     l0 = 0.5 * LAM
@@ -115,7 +115,7 @@ def test_gradient_re_zin_wrt_radius():
 
     def re_zin(radius):
         return jnp.real(
-            wire_dipole_impedance(0.5 * LAM, radius, F0, n_segments=n_seg)
+            wire_dipole_impedance(0.5 * LAM, radius, F0, n_modes=n_seg)
         )
 
     a0 = A_OVER_LAM * LAM
@@ -144,10 +144,10 @@ def test_impedance_matrix_symmetric():
 # ---------------------------------------------------------------------------
 def test_scalar_vs_array_freqs():
     """Scalar freq returns a scalar; array freq returns one Zin per frequency."""
-    zs = wire_dipole_impedance(0.5 * LAM, A_OVER_LAM * LAM, F0, n_segments=21)
+    zs = wire_dipole_impedance(0.5 * LAM, A_OVER_LAM * LAM, F0, n_modes=21)
     assert jnp.ndim(zs) == 0
     za = wire_dipole_impedance(
-        0.5 * LAM, A_OVER_LAM * LAM, jnp.array([F0, 1.1 * F0]), n_segments=21
+        0.5 * LAM, A_OVER_LAM * LAM, jnp.array([F0, 1.1 * F0]), n_modes=21
     )
     assert za.shape == (2,)
     assert complex(za[0]) == complex(zs)
@@ -156,4 +156,15 @@ def test_scalar_vs_array_freqs():
 def test_even_modes_rejected():
     """Even mode counts (no mode at the feed) are rejected."""
     with pytest.raises(ValueError):
-        wire_dipole_impedance(0.5 * LAM, A_OVER_LAM * LAM, F0, n_segments=40)
+        wire_dipole_impedance(0.5 * LAM, A_OVER_LAM * LAM, F0, n_modes=40)
+
+
+def test_x64_guard_fires():
+    """RuntimeError is raised when jax_enable_x64 is False."""
+    # jax.config.jax_enable_x64 is a property; toggle via jax.config.update.
+    jax.config.update("jax_enable_x64", False)
+    try:
+        with pytest.raises(RuntimeError, match="JAX_ENABLE_X64"):
+            wire_dipole_impedance(0.5 * LAM, A_OVER_LAM * LAM, F0, n_modes=21)
+    finally:
+        jax.config.update("jax_enable_x64", True)

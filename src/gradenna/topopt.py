@@ -1,7 +1,6 @@
 """Density-based topology optimization toolkit (three-field scheme).
 
-Implements the standard photonics inverse-design recipe documented in
-``docs/research/10-topology-optimization-theory.md``:
+Implements the standard photonics inverse-design recipe:
 
     latent theta -> sigmoid -> conic (hat) filter -> tanh projection -> rho
 
@@ -185,7 +184,13 @@ def connected_to_seed(rho_binary, seed_ij: tuple[int, int]) -> np.ndarray:
 
 
 def _disk_footprint(width_cells: int) -> np.ndarray:
-    """Discrete disk footprint whose diameter matches ``width_cells``."""
+    """Discrete disk footprint for the morphological opening in minimum_feature_size.
+
+    The footprint radius is ``(width_cells - 1) / 2.0``, so the diameter of the
+    inscribed disk is ``width_cells - 1`` cells for even ``width_cells`` (radius
+    rounds down) and ``width_cells`` for odd ``width_cells``.  Even values are
+    therefore under-enforced by one cell relative to the requested width.
+    """
     radius = (width_cells - 1) / 2.0
     n = int(np.floor(radius))
     y, x = np.mgrid[-n : n + 1, -n : n + 1]
@@ -195,9 +200,19 @@ def _disk_footprint(width_cells: int) -> np.ndarray:
 def minimum_feature_size(rho_binary, width_cells: int) -> np.ndarray:
     """Detect solid pixels violating the minimum linewidth.
 
-    Performs a binary opening with a disk footprint of diameter
-    ``width_cells``; solid pixels removed by the opening belong to features
-    thinner than the minimum width (imageruler-style morphological check).
+    Performs a binary opening with a disk footprint; solid pixels removed by
+    the opening belong to features thinner than the minimum width
+    (imageruler-style morphological check).
+
+    **Footprint diameter**: odd ``width_cells`` gives a disk of diameter exactly
+    ``width_cells``; even ``width_cells`` gives a diameter of ``width_cells - 1``
+    (the radius ``(width_cells - 1) / 2`` rounds down), so even values are
+    under-enforced by one cell.
+
+    **Corner rounding caveat**: the disk/diamond footprint rounds convex corners,
+    so corner pixels of comfortably-wide rectangular features may be flagged as
+    violations.  Treat the result as a conservative screen (same behavior as
+    imageruler), not an exact pixel-accurate check.
 
     Args:
         rho_binary: 2D array; values > 0.5 are treated as solid.
