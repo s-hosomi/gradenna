@@ -179,6 +179,7 @@ def test_patch_design_2g45_fr4_dimensions():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_patch_resonance_within_5pct_of_design():
     """|S11| dip and Im{Zin} = 0 antiresonance both within +-5% of 2.45 GHz.
 
@@ -200,6 +201,7 @@ def test_patch_resonance_within_5pct_of_design():
     )
 
 
+@pytest.mark.slow
 def test_resonance_shifts_down_with_substrate_eps():
     """Raising the substrate eps_r 4.3 -> 5.5 must lower the resonance ~1/sqrt(eps).
 

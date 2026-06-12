@@ -3,10 +3,8 @@
 A lumped 50 ohm RVS port drives the lower-middle of an empty 280 x 280 mm
 2D TM box. Above/around the feed sits a 104 x 104 mm design region whose
 density rho is mapped to electric conductivity through the log-sigma
-interpolation of docs/research/00-summary.md / 05-metal-representation.md,
-
-    sigma(rho) = 10**(c1 rho - c2)   in [1e-4, 1e5] S/m,
-
+interpolation of docs/research/00-summary.md / 05-metal-representation.md
+(`gradenna.materials.sigma_from_density`, sigma in [1e-4, 1e5] S/m)
 and optimized with the three-field scheme of gradenna.topopt (conic filter,
 tanh projection, beta continuation 8 -> 64) and optax.adam.
 
@@ -59,7 +57,9 @@ from gradenna import (
     gaussian_pulse_for_band,
     half_step_dft,
     port_dft,
+    poynting_flux_box_2d,
     s11_power_wave,
+    sigma_from_density,
     simulate_tm,
 )
 from gradenna.topopt import DesignTransform, beta_schedule, gray_indicator
@@ -77,8 +77,6 @@ DESIGN = (slice(44, 96), slice(40, 92))  # 52x52 cells = 104 x 104 mm
 FLUX_BOX = (15, 124, 15, 124)  # (il, ir, jb, jt) Poynting contour, 5 cells
 #   outside the CPML interface and well outside the design region
 SIGMA_MAX, SIGMA_MIN = 1e5, 1e-4  # log-sigma interpolation endpoints [S/m]
-C2 = -np.log10(SIGMA_MIN)
-C1 = np.log10(SIGMA_MAX) + C2
 
 # --- optimization hyperparameters (note 10 Sec. 9) ---------------------------
 
@@ -102,38 +100,11 @@ _mask[PORT_IJ[0] - DESIGN[0].start, PORT_IJ[1] - DESIGN[1].start] = False
 design_mask = jnp.asarray(_mask)
 
 
-def sigma_of_rho(rho):
-    """Log-sigma metal interpolation, sigma_min at rho=0 to sigma_max at 1."""
-    return 10.0 ** (C1 * rho - C2)
-
-
-def poynting_flux_box(dft_ez, dft_hx, dft_hy, il, ir, jb, jt):
-    """Outward Poynting flux (spectral, per DFT frequency) through the
-    dual-grid rectangle x in [il+1/2, ir+1/2], y in [jb+1/2, jt+1/2].
-
-    S = 1/2 Re(E x H*): Sx = -1/2 Re(Ez Hy*), Sy = +1/2 Re(Ez Hx*); Ez is
-    averaged onto the H positions of each face. Same contour integral as the
-    Phase 2 energy-balance test, in jnp so it is differentiable.
-    """
-    dx, dy = grid.dx, grid.dy
-    js = slice(jb + 1, jt + 1)
-    isl = slice(il + 1, ir + 1)
-    ez_r = 0.5 * (dft_ez[:, ir, js] + dft_ez[:, ir + 1, js])
-    p = -0.5 * jnp.real(ez_r * jnp.conj(dft_hy[:, ir, js])).sum(-1) * dy
-    ez_l = 0.5 * (dft_ez[:, il, js] + dft_ez[:, il + 1, js])
-    p += 0.5 * jnp.real(ez_l * jnp.conj(dft_hy[:, il, js])).sum(-1) * dy
-    ez_t = 0.5 * (dft_ez[:, isl, jt] + dft_ez[:, isl, jt + 1])
-    p += 0.5 * jnp.real(ez_t * jnp.conj(dft_hx[:, isl, jt])).sum(-1) * dx
-    ez_b = 0.5 * (dft_ez[:, isl, jb] + dft_ez[:, isl, jb + 1])
-    p -= 0.5 * jnp.real(ez_b * jnp.conj(dft_hx[:, isl, jb])).sum(-1) * dx
-    return p
-
-
 def simulate_design(rho, dft_freqs, n_steps=N_STEPS):
     """FDTD run of the design density rho (port + DFT field monitors)."""
     tt = (jnp.arange(n_steps) + 0.5) * grid.dt
     vs_t = pulse(tt)
-    sig_design = jnp.where(design_mask, sigma_of_rho(rho), 0.0)
+    sig_design = jnp.where(design_mask, sigma_from_density(rho, SIGMA_MIN, SIGMA_MAX), 0.0)
     sigma = jnp.zeros(grid.shape).at[DESIGN].set(sig_design)
     return simulate_tm(
         grid,
@@ -148,7 +119,7 @@ def radiated_fraction(rho):
     """P_rad(f0) / P_avail(f0): the figure of merit (1 = perfectly matched
     lossless radiator; the empty box scores ~0.0055)."""
     res = simulate_design(rho, (F0,))
-    p_rad = poynting_flux_box(res.dft_ez, res.dft_hx, res.dft_hy, *FLUX_BOX)[0]
+    p_rad = poynting_flux_box_2d(res.dft_ez, res.dft_hx, res.dft_hy, grid, FLUX_BOX)[0]
     return p_rad / p_avail_f0
 
 
@@ -208,7 +179,7 @@ def main():
     tt = (jnp.arange(n_eval) + 0.5) * grid.dt
     vs_hat = half_step_dft(pulse(tt), grid.dt, eval_freqs)
     p_avail = jnp.abs(vs_hat) ** 2 / (8.0 * RS)
-    p_rad = poynting_flux_box(res.dft_ez, res.dft_hx, res.dft_hy, *FLUX_BOX)
+    p_rad = poynting_flux_box_2d(res.dft_ez, res.dft_hx, res.dft_hy, grid, FLUX_BOX)
     frac = np.asarray(p_rad[:-1] / p_avail)
     v_hat, i_hat = port_dft(res.port_v[:, 0], res.port_i[:, 0], grid.dt, eval_freqs)
     s11_db = 20.0 * np.log10(np.abs(np.asarray(s11_power_wave(v_hat, i_hat, RS))))

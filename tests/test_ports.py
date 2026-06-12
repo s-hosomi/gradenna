@@ -15,7 +15,14 @@ import numpy as np
 import pytest
 from jax.flatten_util import ravel_pytree
 
-from gradenna import MU0, CPMLSpec, Grid2D, alpha_max_for_fmin, simulate_tm
+from gradenna import (
+    MU0,
+    CPMLSpec,
+    Grid2D,
+    alpha_max_for_fmin,
+    poynting_flux_box_2d,
+    simulate_tm,
+)
 from gradenna.fdtd2d import Port
 from gradenna.sparams import (
     gaussian_pulse_for_band,
@@ -80,34 +87,6 @@ def test_power_wave_matches_analytic_incident_wave(radiation_run):
     assert rel.max() < 1e-3, f"incident-wave mismatch {rel}"
 
 
-def _poynting_flux_box(res, grid, il, ir, jb, jt):
-    """Outward Poynting flux [W/m] per DFT frequency through the dual-grid
-    rectangle x in [il+1/2, ir+1/2], y in [jb+1/2, jt+1/2].
-
-    S = 1/2 Re(E x H*): Sx = -1/2 Re(Ez Hy*), Sy = +1/2 Re(Ez Hx*); Ez is
-    averaged onto the H positions of each face.
-    """
-    ez = np.asarray(res.dft_ez)
-    hx = np.asarray(res.dft_hx)
-    hy = np.asarray(res.dft_hy)
-    dx, dy = grid.dx, grid.dy
-    js = slice(jb + 1, jt + 1)
-    isl = slice(il + 1, ir + 1)
-    # right face (outward +x): Hy at (ir+1/2, j)
-    ez_r = 0.5 * (ez[:, ir, js] + ez[:, ir + 1, js])
-    p = -0.5 * np.real(ez_r * np.conj(hy[:, ir, js])).sum(axis=-1) * dy
-    # left face (outward -x)
-    ez_l = 0.5 * (ez[:, il, js] + ez[:, il + 1, js])
-    p += 0.5 * np.real(ez_l * np.conj(hy[:, il, js])).sum(axis=-1) * dy
-    # top face (outward +y): Hx at (i, jt+1/2)
-    ez_t = 0.5 * (ez[:, isl, jt] + ez[:, isl, jt + 1])
-    p += 0.5 * np.real(ez_t * np.conj(hx[:, isl, jt])).sum(axis=-1) * dx
-    # bottom face (outward -y)
-    ez_b = 0.5 * (ez[:, isl, jb] + ez[:, isl, jb + 1])
-    p -= 0.5 * np.real(ez_b * np.conj(hx[:, isl, jb])).sum(axis=-1) * dx
-    return p
-
-
 def test_port_power_equals_poynting_flux(radiation_run):
     """1/2 Re(V I*) at the port must match the radiated flux within 3%."""
     grid, res, _ = radiation_run
@@ -115,7 +94,11 @@ def test_port_power_equals_poynting_flux(radiation_run):
     p_port = 0.5 * np.real(np.asarray(v_hat) * np.conj(np.asarray(i_hat)))
     c = grid.nx // 2
     k = 20  # contour 20 cells from the port, well inside the CPML
-    p_flux = _poynting_flux_box(res, grid, c - k, c + k - 1, c - k, c + k - 1)
+    p_flux = np.asarray(
+        poynting_flux_box_2d(
+            res.dft_ez, res.dft_hx, res.dft_hy, grid, (c - k, c + k - 1, c - k, c + k - 1)
+        )
+    )
     assert np.all(p_port > 0.0)
     rel = np.abs(p_flux - p_port) / p_port
     assert rel.max() < 0.03, f"per-frequency energy-balance error {rel}"

@@ -10,14 +10,15 @@ from gradenna.cpml import CPMLSpec, alpha_max_for_fmin
 from gradenna.designs import patch_design
 from gradenna.fdtd2d import Port, SimResult, field_energy, simulate_tm
 from gradenna.fdtd3d import (
-    Grid3D,
     SimResult3D,
     field_energy_3d,
     port_impedance,
     simulate_3d,
     time_series_dft,
 )
-from gradenna.grid import Grid2D
+from gradenna.grid import Grid2D, Grid3D
+from gradenna.materials import sheet_conductivity, sigma_from_density
+from gradenna.monitors import poynting_flux_box_2d
 from gradenna.ntff import (
     directivity_2d,
     directivity_3d,
@@ -83,9 +84,12 @@ __all__ = [
     "patch_design",
     "port_dft",
     "port_impedance",
+    "poynting_flux_box_2d",
     "radiated_power_2d",
     "radiated_power_3d",
     "s11_power_wave",
+    "sheet_conductivity",
+    "sigma_from_density",
     "simulate_3d",
     "simulate_tm",
     "tanh_projection",

@@ -115,6 +115,58 @@ def test_two_element_array_pattern():
     assert pattern[180] <= 0.02, f"endfire level {pattern[180]:.4f}"
 
 
+@functools.lru_cache(maxsize=1)
+def _run_2d_endfire():
+    """lambda/4-spaced pair along x; the +x element lags by 90 deg."""
+    grid = Grid2D(nx=N2, ny=N2, dx=DX2, dy=DX2)
+    c = N2 // 2
+    tau = 8.0 / (2.0 * np.pi * F2)
+    t = (jnp.arange(STEPS2) + 0.5) * grid.dt
+    # 90 deg carrier lag = T/4 delay (the tau-long envelope shift is negligible).
+    cur_lead = modulated_gaussian(t, f0=F2, t0=6.0 * tau, tau=tau)
+    cur_lag = modulated_gaussian(t, f0=F2, t0=6.0 * tau + 0.25 / F2, tau=tau)
+    source_ij = ((c - 5, c), (c + 5, c))  # lambda/4 = 10 cells apart
+    res = simulate_tm(
+        grid,
+        source_ij=source_ij,
+        source_current=jnp.stack([cur_lead, cur_lag], axis=1),
+        dft_freqs=(F2,),
+        cpml=CPMLSpec(thickness=10, alpha_max=alpha_max_for_fmin(F2 / 2.0)),
+    )
+    return ntff_2d(res.dft_ez, res.dft_hx, res.dft_hy, grid, MARGIN2, (F2,), ANGLES2)
+
+
+def test_endfire_pair_propagation_phase_sign():
+    """lambda/4 pair with the +x element 90 deg lagging: cardioid toward +x.
+
+    |AF|^2 = 4 cos^2((pi/4)(cos phi - 1)) peaks at phi = 0 and has a null at
+    phi = pi. This discriminates the sign of the NTFF propagation phase
+    e^{+jk r'.rhat}: with the opposite sign the pattern flips (peak at
+    phi = pi, null at phi = 0), which the broadside/isotropy tests above
+    cannot detect (their patterns are symmetric under phi -> phi + pi).
+    """
+    e_far = _run_2d_endfire()
+    pattern = np.abs(np.asarray(e_far[0])) ** 2
+    pattern = pattern / pattern.max()
+    phi = np.asarray(ANGLES2)
+
+    analytic = np.cos(0.25 * np.pi * (np.cos(phi) - 1.0)) ** 2
+    corr = np.corrcoef(pattern, analytic)[0, 1]
+    assert corr >= 0.99, f"pattern correlation {corr:.4f} < 0.99"
+
+    # Peak toward +x: the cardioid maximum is 4th-order flat at phi = 0, so
+    # the argmax wanders a few degrees; +-15 deg still discriminates the
+    # sign flip unambiguously (the flipped pattern peaks at 180 deg).
+    peak_phi = phi[int(np.argmax(pattern))]
+    d0 = min(peak_phi, 2.0 * np.pi - peak_phi)
+    assert d0 <= np.radians(15.0) + 1e-12, f"peak at {np.degrees(peak_phi):.1f} deg"
+
+    # Null toward -x (phi = 180 deg).
+    assert pattern[180] <= 0.02, f"back-lobe level {pattern[180]:.4f}"
+    # Sanity: strong front-to-back contrast.
+    assert pattern[0] >= 0.9, f"forward level {pattern[0]:.4f}"
+
+
 # ---------------------------------------------------------------------------
 # 3D setup: dx = 4 mm, lambda = 25 cells (f ~ 3 GHz), 48^3 grid, 600 steps
 # ---------------------------------------------------------------------------

@@ -284,6 +284,10 @@ def optimize(
         if i in snapshot_steps:
             snapshots.append((i, np.asarray(rho)))
 
+    # The loop's rho lags one update behind theta; re-project the final theta
+    # so "rho" really is the final density at the final beta (docstring).
+    rho = transform(theta, schedule(max(0, n_steps - 1)))
+
     return {
         "theta": theta,
         "rho": rho,

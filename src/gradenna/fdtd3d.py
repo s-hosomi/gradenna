@@ -19,7 +19,10 @@ differentiated with `jax.grad` with respect to the material arrays
 
 Materials are defined per cell on an (nx, ny, nz) lattice; the value at
 node (i, j, k) is applied unchanged to the three E edges emanating from it
-(Ex(i+1/2,j,k), Ey(i,j+1/2,k), Ez(i,j,k+1/2)).
+(Ex(i+1/2,j,k), Ey(i,j+1/2,k), Ez(i,j,k+1/2)). A consequence: a 1-cell
+conductor sheet also shorts the vertical Ez edges directly above it (a pin
+layer); see tests/test_patch_antenna.py for the details and the
+compensation.
 
 Lumped resistive voltage source (RVS; Piket-May, Taflove & Baron 1994,
 research note 12) on a single z-directed Ez edge, semi-implicit in Ez:
@@ -30,7 +33,12 @@ research note 12) on a single z-directed Ez edge, semi-implicit in Ez:
 
     beta = dt dz / (2 Rs eps dx dy),   h = sigma dt / (2 eps)
 
-with port voltage V^n = -Ez^n dz and Ampere-loop current
+with port voltage (the same semi-implicit average as the 2D solver, so V
+and I are time-aligned at t = (n+1/2) dt)
+
+    V^{n+1/2} = -dz (Ez^n + Ez^{n+1}) / 2
+
+and Ampere-loop current
 
     I^{n+1/2} = (Hy|i+1/2 - Hy|i-1/2) dy + (Hx|j-1/2 - Hx|j+1/2) dx
 
@@ -40,48 +48,15 @@ the total — conduction plus displacement — current through the port face).
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from gradenna.constants import C0, EPS0, MU0
+from gradenna.constants import EPS0, MU0
 from gradenna.cpml import CPMLSpec, axis_coefficients
-
-
-@dataclass(frozen=True)
-class Grid3D:
-    """Uniform 3D Yee grid (see module docstring for field locations)."""
-
-    nx: int
-    ny: int
-    nz: int
-    dx: float
-    dy: float
-    dz: float
-    courant: float = 0.99  # fraction of the 3D stability limit
-
-    def __post_init__(self) -> None:
-        if min(self.nx, self.ny, self.nz) < 3:
-            raise ValueError(
-                f"grid must be at least 3x3x3, got {self.nx}x{self.ny}x{self.nz}"
-            )
-        if min(self.dx, self.dy, self.dz) <= 0.0 or self.courant <= 0.0:
-            raise ValueError("dx, dy, dz and courant must be positive")
-
-    @property
-    def dt(self) -> float:
-        """Time step Δt = S / (c √(1/Δx² + 1/Δy² + 1/Δz²)) with S = courant."""
-        return self.courant / (
-            C0 * math.sqrt(1.0 / self.dx**2 + 1.0 / self.dy**2 + 1.0 / self.dz**2)
-        )
-
-    @property
-    def shape(self) -> tuple[int, int, int]:
-        return (self.nx, self.ny, self.nz)
+from gradenna.grid import Grid3D  # noqa: F401  (re-exported for backward compat)
 
 
 class DFTMonitor(NamedTuple):
@@ -106,7 +81,8 @@ class SimResult3D(NamedTuple):
     """Time series, monitors and final fields of a 3D simulation.
 
     probe_ez: (n_steps, n_probes) Ez at the probe edges; row n is time (n+1) dt.
-    port_v:   (n_steps,) port voltage V = -Ez dz at t = (n+1) dt, or None.
+    port_v:   (n_steps,) port voltage V = -dz (Ez^n + Ez^{n+1})/2, time-aligned
+        at t = (n+1/2) dt (same convention as the 2D solver), or None.
     port_i:   (n_steps,) Ampere-loop port current at t = (n+1/2) dt, or None.
     energy:   (n_steps,) total field energy [J], or None unless requested.
     dft:      DFTMonitor with full-grid spectra, or None unless requested.
@@ -171,8 +147,9 @@ def field_energy_3d(ex, ey, ez, hx, hy, hz, eps, grid: Grid3D):
 def time_series_dft(x, dt: float, freqs, *, t0: float = 0.0):
     """Exact-phase DFT of a sampled time series: X̂(f) = Δt Σ_n x_n e^{-i2πf(t0+nΔt)}.
 
-    Use t0 = dt for E-type records (probe_ez, port_v) and t0 = dt/2 for
-    H-type records (port_i), matching the sample times in SimResult3D.
+    Use t0 = dt for E-type records (probe_ez) and t0 = dt/2 for half-step
+    records (port_v, port_i, source/port waveforms), matching the sample
+    times in SimResult3D.
     """
     x = jnp.asarray(x)
     freqs = jnp.atleast_1d(jnp.asarray(freqs))
@@ -191,16 +168,25 @@ def port_impedance(
 ):
     """Port input impedance Z(f) from the recorded V/I time series.
 
-    V and I are DFT'ed at their exact sample times ((n+1) dt and
-    (n+1/2) dt), so the half-step phase correction is exact. The Ampere
-    loop measures the total current through the port face, which includes
-    the displacement current of the 1-cell gap itself (research note 12,
-    sections 2.1 and 6.1) — a shunt susceptance across the port. With
-    ``deembed_gap=True`` (default) the exact discrete gap susceptance is
-    removed in parallel:
+    V and I are both recorded at t = (n+1/2) dt (V is the semi-implicit
+    average of Ez^n and Ez^{n+1}), so a single exact-phase DFT kernel
+    applies to both. The Ampere loop measures the total current through
+    the port face, which includes the displacement current of the 1-cell
+    gap itself (research note 12, sections 2.1 and 6.1) — a shunt
+    susceptance across the port. DFT'ing the discrete Maxwell-Ampere
+    update of the port edge term by term gives the exact identity (lossless
+    port cell, fields zero at the start and decayed at the end of the run)
 
-        Z = 1 / ( Î/V̂ + j ω̃ C_gap ),
-        C_gap = eps dx dy / dz,   ω̃ = 2 sin(ω dt/2) / dt
+        Î + j ω̄ C_gap V̂ = (V̂s - V̂) / Rs,
+        C_gap = eps dx dy / dz,   ω̄ = 2 tan(ω dt/2) / dt,
+
+    i.e. the loop current is the Thevenin branch current minus
+    j ω̄ C_gap V̂ (the gap displacement current; with V = -Ez dz it enters
+    with a minus sign), so the branch current is restored by *adding*
+    + j ω̄ C_gap to the measured admittance. With ``deembed_gap=True``
+    (default) this removes the exact discrete gap susceptance in parallel:
+
+        Z = 1 / ( Î/V̂ + j ω̄ C_gap ).
 
     With ``deembed_gap=False`` the raw V̂/Î is returned; its real part is
     distorted by the gap shunt (severely so for electrically small loads).
@@ -209,11 +195,11 @@ def port_impedance(
         raise ValueError("result has no port records")
     dt = grid.dt
     freqs = jnp.atleast_1d(jnp.asarray(freqs))
-    v_hat = time_series_dft(result.port_v, dt, freqs, t0=dt)
+    v_hat = time_series_dft(result.port_v, dt, freqs, t0=0.5 * dt)
     i_hat = time_series_dft(result.port_i, dt, freqs, t0=0.5 * dt)
     if not deembed_gap:
         return v_hat / i_hat
-    omega_d = 2.0 * jnp.sin(jnp.pi * freqs * dt) / dt
+    omega_d = 2.0 * jnp.tan(jnp.pi * freqs * dt) / dt
     c_gap = EPS0 * eps_r_port * grid.dx * grid.dy / grid.dz
     return 1.0 / (i_hat / v_hat + 1j * omega_d * c_gap)
 
@@ -378,11 +364,17 @@ def simulate_3d(
     if has_dft:
         freqs = jnp.atleast_1d(jnp.asarray(dft_freqs, dtype))
         cdtype = jnp.result_type(dtype, jnp.complex64)
-        n = jnp.arange(n_steps, dtype=dtype)
-        omega_t_e = 2.0 * jnp.pi * freqs[None, :] * ((n[:, None] + 1.0) * dt)
-        omega_t_h = 2.0 * jnp.pi * freqs[None, :] * ((n[:, None] + 0.5) * dt)
-        e_phase = (dt * jnp.exp(-1j * omega_t_e)).astype(cdtype)  # (n_steps, n_freqs)
-        h_phase = (dt * jnp.exp(-1j * omega_t_h)).astype(cdtype)
+        # Exact-phase tables, generated in float64 (note 12 Sec. 5.2: never
+        # build the phasor recursively in low precision).
+        f_np = np.atleast_1d(np.asarray(dft_freqs, np.float64))
+        n_np = np.arange(n_steps, dtype=np.float64)
+        # (n_steps, n_freqs), already scaled by dt.
+        e_phase = jnp.asarray(
+            dt * np.exp(-2j * np.pi * np.outer(n_np + 1.0, f_np) * dt), cdtype
+        )
+        h_phase = jnp.asarray(
+            dt * np.exp(-2j * np.pi * np.outer(n_np + 0.5, f_np) * dt), cdtype
+        )
 
     def step(state: _State3D, xs):
         ex, ey, ez = state.ex, state.ey, state.ez
@@ -470,7 +462,8 @@ def simulate_3d(
         )
         out = {"probe": ez[probe_idx[:, 0], probe_idx[:, 1], probe_idx[:, 2]]}
         if has_port:
-            out["v"] = -ez[pi, pj, pk] * dz
+            # V^{n+1/2} = -dz (Ez^n + Ez^{n+1})/2: time-aligned with I.
+            out["v"] = -0.5 * dz * (ez_prev[pi, pj, pk] + ez[pi, pj, pk])
             out["i"] = i_loop
         if record_energy:
             out["energy"] = field_energy_3d(ex, ey, ez, hx, hy, hz, eps, grid)

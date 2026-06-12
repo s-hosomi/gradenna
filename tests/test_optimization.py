@@ -24,6 +24,8 @@ from gradenna import (
     alpha_max_for_fmin,
     gaussian_pulse_for_band,
     half_step_dft,
+    poynting_flux_box_2d,
+    sigma_from_density,
     simulate_tm,
 )
 from gradenna.topopt import DesignTransform, beta_schedule, gray_indicator
@@ -40,32 +42,9 @@ PORT_IJ = (40, 36)
 DESIGN = (slice(32, 48), slice(32, 48))
 FLUX_BOX = (13, 66, 13, 66)  # (il, ir, jb, jt), outside the design region
 SIGMA_MAX, SIGMA_MIN = 1e5, 1e-4  # log-sigma interpolation endpoints [S/m]
-C2 = -np.log10(SIGMA_MIN)
-C1 = np.log10(SIGMA_MAX) + C2
 BETAS = (8.0, 32.0)
 ITERS_PER_BETA = 15
 LEARNING_RATE = 0.1
-
-
-def _poynting_flux_box(dft_ez, dft_hx, dft_hy, dx, dy, il, ir, jb, jt):
-    """Outward Poynting flux [W/m, spectral] per DFT frequency through the
-    dual-grid rectangle x in [il+1/2, ir+1/2], y in [jb+1/2, jt+1/2].
-
-    S = 1/2 Re(E x H*): Sx = -1/2 Re(Ez Hy*), Sy = +1/2 Re(Ez Hx*); Ez is
-    averaged onto the H positions of each face (same contour integral as the
-    Phase 2 energy-balance test, but in jnp so it is differentiable).
-    """
-    js = slice(jb + 1, jt + 1)
-    isl = slice(il + 1, ir + 1)
-    ez_r = 0.5 * (dft_ez[:, ir, js] + dft_ez[:, ir + 1, js])
-    p = -0.5 * jnp.real(ez_r * jnp.conj(dft_hy[:, ir, js])).sum(-1) * dy
-    ez_l = 0.5 * (dft_ez[:, il, js] + dft_ez[:, il + 1, js])
-    p += 0.5 * jnp.real(ez_l * jnp.conj(dft_hy[:, il, js])).sum(-1) * dy
-    ez_t = 0.5 * (dft_ez[:, isl, jt] + dft_ez[:, isl, jt + 1])
-    p += 0.5 * jnp.real(ez_t * jnp.conj(dft_hx[:, isl, jt])).sum(-1) * dx
-    ez_b = 0.5 * (dft_ez[:, isl, jb] + dft_ez[:, isl, jb + 1])
-    p -= 0.5 * jnp.real(ez_b * jnp.conj(dft_hx[:, isl, jb])).sum(-1) * dx
-    return p
 
 
 @pytest.fixture(scope="module")
@@ -86,7 +65,7 @@ def problem():
 
     def radiated_fraction(rho):
         """P_rad(f0) / P_avail(f0) for the design density rho."""
-        sig_design = jnp.where(mask, 10.0 ** (C1 * rho - C2), 0.0)
+        sig_design = jnp.where(mask, sigma_from_density(rho, SIGMA_MIN, SIGMA_MAX), 0.0)
         sigma = jnp.zeros(grid.shape).at[DESIGN].set(sig_design)
         res = simulate_tm(
             grid,
@@ -95,8 +74,8 @@ def problem():
             dft_freqs=(F0,),
             cpml=cpml,
         )
-        p_rad = _poynting_flux_box(
-            res.dft_ez, res.dft_hx, res.dft_hy, grid.dx, grid.dy, *FLUX_BOX
+        p_rad = poynting_flux_box_2d(
+            res.dft_ez, res.dft_hx, res.dft_hy, grid, FLUX_BOX
         )[0]
         return p_rad / p_avail
 
