@@ -24,9 +24,10 @@ Physics notes specific to the 2D TM slice (found while tuning this demo):
   reactance) toward the 50 ohm source.
 - Resonant features need >~ lambda/2 = 61 mm, hence the 104 mm design
   region (a 80 mm region only resonates above 2.9 GHz).
-- The run uses float64: the uniform rho = 0.5 start is a ~3 S/m absorber
-  blob, and in float32 the Poynting fluxes / gradients through it can
-  underflow to exactly zero, freezing the optimizer at iteration 0.
+- float64 is used here for reference-quality output, but plain float32
+  also works since the slab-psi / float64-phase-table refactors (verified
+  in tests/test_float32_opt.py); for very strong attenuation between the
+  source and the flux contour, pass dft_dtype=jnp.complex128 (needs x64).
 
 Run:  JAX_ENABLE_X64=1 uv run python examples/optimize_2d_antenna.py
 (~10 min on a laptop CPU.) Writes optimize_2d_antenna.png next to this

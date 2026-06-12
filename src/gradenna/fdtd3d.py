@@ -268,6 +268,7 @@ def simulate_3d(
     probe_ijk=(),
     cpml: CPMLSpec = CPMLSpec(),
     dft_freqs=None,
+    dft_dtype=None,
     record_energy: bool = False,
     checkpoint_segments: int | None = None,
 ) -> SimResult3D:
@@ -292,6 +293,14 @@ def simulate_3d(
         cpml: CPML parameters; thickness 0 gives a plain PEC box.
         dft_freqs: frequencies [Hz] for a full-grid running DFT of all six
             components (memory: n_freqs x grid complex per component).
+        dft_dtype: complex dtype of the running-DFT accumulators. ``None``
+            (default) follows the field dtype (complex64 in a float32 run).
+            Pass an explicit complex type (e.g. ``jnp.complex128``) to keep the
+            DFT phasors and exact-phase kernel in higher precision while the
+            fields stay float32 — the float32 underflow rescue for power
+            monitors through strongly attenuating media (see the 2D solver's
+            note). Only the DFT carry and the returned spectra change dtype;
+            the fields, CPML psi slabs and checkpointing are untouched.
         record_energy: also record the total field energy at every step.
         checkpoint_segments: split the time loop into K segments and wrap the
             inner scan in `jax.checkpoint` (sqrt-N checkpointing). Must divide
@@ -412,7 +421,12 @@ def simulate_3d(
     has_dft = dft_freqs is not None
     if has_dft:
         freqs = jnp.atleast_1d(jnp.asarray(dft_freqs, dtype))
-        cdtype = jnp.result_type(dtype, jnp.complex64)
+        if dft_dtype is None:
+            cdtype = jnp.result_type(dtype, jnp.complex64)
+        else:
+            cdtype = jnp.dtype(dft_dtype)
+            if not jnp.issubdtype(cdtype, jnp.complexfloating):
+                raise ValueError(f"dft_dtype must be a complex dtype, got {dft_dtype}")
         # Exact-phase tables, generated in float64 (note 12 Sec. 5.2: never
         # build the phasor recursively in low precision).
         f_np = np.atleast_1d(np.asarray(dft_freqs, np.float64))

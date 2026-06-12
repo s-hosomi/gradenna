@@ -12,6 +12,7 @@ import jax.numpy as jnp
 from gradenna.grid import Grid2D
 
 __all__ = [
+    "log_radiated_fraction",
     "poynting_flux_box_2d",
 ]
 
@@ -67,3 +68,33 @@ def poynting_flux_box_2d(dft_ez, dft_hx, dft_hy, grid: Grid2D, box):
     ez_b = 0.5 * (dft_ez[:, isl, jb] + dft_ez[:, isl, jb + 1])
     p -= 0.5 * jnp.real(ez_b * jnp.conj(dft_hx[:, isl, jb])).sum(-1) * dx
     return p
+
+
+def log_radiated_fraction(p_rad, p_avail):
+    """Scale-invariant log radiated-power objective ``log P_rad - log P_avail``.
+
+    The topology-optimization figure of merit is the radiated-power fraction
+    ``P_rad / P_avail`` (`poynting_flux_box_2d` flux normalized by the available
+    source power). For maximization, ``log P_rad - log P_avail`` is monotone in
+    that ratio but **scale invariant**: its gradient is ``(1/P_rad) dP_rad``,
+    which does not multiply the (possibly tiny) absolute flux back in. This is
+    the float32-robust form when both powers sit far below 1 — the linear ratio
+    differentiates ``P_rad/P_avail`` and the backward pass carries the small
+    ``1/P_avail`` factor through the flux product, whereas the log form keeps
+    the relative sensitivity at order 1 regardless of the absolute scale.
+
+    Note this rescues only *finite, positive* fluxes: if ``P_rad`` has already
+    underflowed the field dtype to exactly 0 (extreme attenuation, see
+    ``simulate_tm``'s ``dft_dtype`` argument), the log is -inf and no loss
+    reformulation can recover a gradient — keep the DFT accumulator in higher
+    precision and/or the fields out of the underflow regime instead.
+
+    Args:
+        p_rad: radiated power (e.g. a `poynting_flux_box_2d` entry), > 0.
+        p_avail: available source power |Vs_hat|^2 / (8 Rs), > 0.
+
+    Returns:
+        ``log(P_rad) - log(P_avail)``, the same dtype-promoted shape as the
+        inputs. Differentiable with `jax.grad`.
+    """
+    return jnp.log(p_rad) - jnp.log(p_avail)

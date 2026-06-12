@@ -8,6 +8,7 @@ Submodules with optional heavy dependencies are not imported here:
 from gradenna.constants import C0, EPS0, ETA0, MU0
 from gradenna.cpml import CPMLSpec, alpha_max_for_fmin
 from gradenna.designs import patch_design
+from gradenna.estimate import fdtd3d_memory_estimate, fits_gpu, gpu_fit_report
 from gradenna.fdtd2d import Port, SimResult, field_energy, simulate_tm
 from gradenna.fdtd3d import (
     SimResult3D,
@@ -18,7 +19,7 @@ from gradenna.fdtd3d import (
 )
 from gradenna.grid import Grid2D, Grid3D
 from gradenna.materials import sheet_conductivity, sigma_from_density
-from gradenna.monitors import poynting_flux_box_2d
+from gradenna.monitors import log_radiated_fraction, poynting_flux_box_2d
 from gradenna.ntff import (
     directivity_2d,
     directivity_3d,
@@ -67,15 +68,19 @@ __all__ = [
     "connected_to_seed",
     "directivity_2d",
     "directivity_3d",
+    "fdtd3d_memory_estimate",
     "field_energy",
     "field_energy_3d",
+    "fits_gpu",
     "gain",
+    "gpu_fit_report",
     "gaussian",
     "gaussian_derivative",
     "gaussian_pulse_for_band",
     "gray_indicator",
     "half_step_dft",
     "incident_voltage",
+    "log_radiated_fraction",
     "minimum_feature_size",
     "modulated_gaussian",
     "ntff_2d",

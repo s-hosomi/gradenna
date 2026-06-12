@@ -188,6 +188,7 @@ def simulate_tm(
     probe_ij=(),
     ports=(),
     dft_freqs=(),
+    dft_dtype=None,
     cpml: CPMLSpec = CPMLSpec(),
     record_energy: bool = False,
 ) -> SimResult:
@@ -210,6 +211,17 @@ def simulate_tm(
         dft_freqs: frequencies [Hz] for the running DFT field monitor.
             When non-empty, the result carries complex Ez/Hx/Hy phasors
             accumulated with exact sample-time phases (note 12 Sec. 5.1).
+        dft_dtype: complex dtype of the running-DFT accumulators (the only
+            high-frequency state added by the monitor). ``None`` (default)
+            follows the field dtype, i.e. complex64 in a float32 run. Pass an
+            explicit complex type (e.g. ``jnp.complex128``) to keep the DFT
+            phasors and the exact-phase kernel in higher precision while the
+            fields stay float32: this rescues float32 topology optimization,
+            where the radiated flux through a gray absorber (field amplitudes
+            ~1e-20) otherwise underflows the complex64 normal minimum ~1e-38
+            to exactly zero and kills the gradient. Only the DFT carry and the
+            returned phasors change dtype; the field state, CPML psi slabs and
+            the checkpointing structure are untouched.
         cpml: CPML parameters; thickness 0 gives a plain PEC box.
         record_energy: also record the total field energy at every step
             (adds full-grid reductions; off by default).
@@ -331,7 +343,12 @@ def simulate_tm(
     dft_freqs = tuple(float(f) for f in dft_freqs)
     n_freq = len(dft_freqs)
     if n_freq:
-        cdtype = jnp.result_type(dtype, np.complex64)
+        if dft_dtype is None:
+            cdtype = jnp.result_type(dtype, np.complex64)
+        else:
+            cdtype = jnp.dtype(dft_dtype)
+            if not jnp.issubdtype(cdtype, jnp.complexfloating):
+                raise ValueError(f"dft_dtype must be a complex dtype, got {dft_dtype}")
         # Exact-phase tables, generated in float64 (note 12 Sec. 5.2: never
         # build the phasor recursively in low precision).
         f_np = np.asarray(dft_freqs, np.float64)
