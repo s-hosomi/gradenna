@@ -55,7 +55,14 @@ import jax.numpy as jnp
 import numpy as np
 
 from gradenna.constants import EPS0, MU0
-from gradenna.cpml import CPMLSpec, axis_coefficients
+from gradenna.cpml import (
+    CPMLSpec,
+    PsiSlabs,
+    axis_coefficients,
+    psi_step,
+    slab_coefficients,
+    slab_slices,
+)
 from gradenna.grid import Grid3D  # noqa: F401  (re-exported for backward compat)
 
 
@@ -102,6 +109,50 @@ class SimResult3D(NamedTuple):
     hz: jnp.ndarray
 
 
+class _Psi3D(NamedTuple):
+    """The 12 CPML psi variables, each as a low/high PML slab pair.
+
+    Strip (slab) storage of note 14 Sec. 5.3: psi_{F,w} is non-zero only
+    where the stretched axis w lies inside the PML, so each variable is two
+    slabs of `npml` samples along w, spanning the full transverse extent
+    (corners included). E-type psi live on the PEC interior, H-type on the
+    half grid. With full arrays the psi set adds ~200% to the 3D scan carry
+    — and reverse-mode AD puts the whole carry on the tape every step.
+    """
+
+    exy: PsiSlabs  # (nx-1, npml, nz-2) x2
+    exz: PsiSlabs  # (nx-1, ny-2, npml) x2
+    eyx: PsiSlabs  # (npml, ny-1, nz-2) x2
+    eyz: PsiSlabs  # (nx-2, ny-1, npml) x2
+    ezx: PsiSlabs  # (npml, ny-2, nz-1) x2
+    ezy: PsiSlabs  # (nx-2, npml, nz-1) x2
+    hxy: PsiSlabs  # (nx, npml, nz-1) x2
+    hxz: PsiSlabs  # (nx, ny-1, npml) x2
+    hyx: PsiSlabs  # (npml, ny, nz-1) x2
+    hyz: PsiSlabs  # (nx-1, ny, npml) x2
+    hzx: PsiSlabs  # (npml, ny-1, nz) x2
+    hzy: PsiSlabs  # (nx-1, npml, nz) x2
+
+
+def _init_psi(nx: int, ny: int, nz: int, npml: int, dtype) -> _Psi3D:
+    """Zero-initialized slab-stored psi state (note 14 Sec. 5.3)."""
+    pair = lambda shape: PsiSlabs(jnp.zeros(shape, dtype), jnp.zeros(shape, dtype))  # noqa: E731
+    return _Psi3D(
+        exy=pair((nx - 1, npml, nz - 2)),
+        exz=pair((nx - 1, ny - 2, npml)),
+        eyx=pair((npml, ny - 1, nz - 2)),
+        eyz=pair((nx - 2, ny - 1, npml)),
+        ezx=pair((npml, ny - 2, nz - 1)),
+        ezy=pair((nx - 2, npml, nz - 1)),
+        hxy=pair((nx, npml, nz - 1)),
+        hxz=pair((nx, ny - 1, npml)),
+        hyx=pair((npml, ny, nz - 1)),
+        hyz=pair((nx - 1, ny, npml)),
+        hzx=pair((npml, ny - 1, nz)),
+        hzy=pair((nx - 1, npml, nz)),
+    )
+
+
 class _State3D(NamedTuple):
     ex: jnp.ndarray
     ey: jnp.ndarray
@@ -109,20 +160,8 @@ class _State3D(NamedTuple):
     hx: jnp.ndarray
     hy: jnp.ndarray
     hz: jnp.ndarray
-    # CPML psi for E updates (interior-sized, two transverse axes each).
-    p_exy: jnp.ndarray
-    p_exz: jnp.ndarray
-    p_eyx: jnp.ndarray
-    p_eyz: jnp.ndarray
-    p_ezx: jnp.ndarray
-    p_ezy: jnp.ndarray
-    # CPML psi for H updates (full-sized, two transverse axes each).
-    p_hxy: jnp.ndarray
-    p_hxz: jnp.ndarray
-    p_hyx: jnp.ndarray
-    p_hyz: jnp.ndarray
-    p_hzx: jnp.ndarray
-    p_hzy: jnp.ndarray
+    # CPML psi variables in slab storage (note 14 Sec. 5.3).
+    psi: _Psi3D
     # Running DFT accumulators (tuple of six complex arrays) or None.
     dft: tuple | None
 
@@ -324,25 +363,35 @@ def simulate_3d(
     ca_ez, cb_ez = ca[1:-1, 1:-1, :-1], cb[1:-1, 1:-1, :-1]
 
     # CPML tables: integer positions for the E updates (sliced to the PEC
-    # interior), half positions for the H updates.
-    bx_e, cx_e, kx_e = (
-        a[1:-1, None, None] for a in axis_coefficients(nx, dx, dt, cpml, half=False, dtype=dtype)
-    )
-    by_e, cy_e, ky_e = (
-        a[None, 1:-1, None] for a in axis_coefficients(ny, dy, dt, cpml, half=False, dtype=dtype)
-    )
-    bz_e, cz_e, kz_e = (
-        a[None, None, 1:-1] for a in axis_coefficients(nz, dz, dt, cpml, half=False, dtype=dtype)
-    )
-    bx_h, cx_h, kx_h = (
-        a[:, None, None] for a in axis_coefficients(nx, dx, dt, cpml, half=True, dtype=dtype)
-    )
-    by_h, cy_h, ky_h = (
-        a[None, :, None] for a in axis_coefficients(ny, dy, dt, cpml, half=True, dtype=dtype)
-    )
-    bz_h, cz_h, kz_h = (
-        a[None, None, :] for a in axis_coefficients(nz, dz, dt, cpml, half=True, dtype=dtype)
-    )
+    # interior), half positions for the H updates. psi is stored on the two
+    # PML slabs per stretched axis (note 14 Sec. 5.3), so the b/c tables are
+    # restricted to the slabs; 1/kappa stays full-size (== 1 outside the PML).
+    ax_e = axis_coefficients(nx, dx, dt, cpml, half=False, dtype=dtype)
+    ay_e = axis_coefficients(ny, dy, dt, cpml, half=False, dtype=dtype)
+    az_e = axis_coefficients(nz, dz, dt, cpml, half=False, dtype=dtype)
+    ax_h = axis_coefficients(nx, dx, dt, cpml, half=True, dtype=dtype)
+    ay_h = axis_coefficients(ny, dy, dt, cpml, half=True, dtype=dtype)
+    az_h = axis_coefficients(nz, dz, dt, cpml, half=True, dtype=dtype)
+    kx_e = ax_e.inv_kappa[1:-1, None, None]
+    ky_e = ay_e.inv_kappa[None, 1:-1, None]
+    kz_e = az_e.inv_kappa[None, None, 1:-1]
+    kx_h = ax_h.inv_kappa[:, None, None]
+    ky_h = ay_h.inv_kappa[None, :, None]
+    kz_h = az_h.inv_kappa[None, None, :]
+
+    npml = cpml.thickness
+    sx_e = slab_slices(nx - 2, npml)
+    sy_e = slab_slices(ny - 2, npml)
+    sz_e = slab_slices(nz - 2, npml)
+    sx_h = slab_slices(nx - 1, npml)
+    sy_h = slab_slices(ny - 1, npml)
+    sz_h = slab_slices(nz - 1, npml)
+    bcx_e = slab_coefficients(ax_e.b[1:-1], ax_e.c[1:-1], sx_e, axis=0, ndim=3)
+    bcy_e = slab_coefficients(ay_e.b[1:-1], ay_e.c[1:-1], sy_e, axis=1, ndim=3)
+    bcz_e = slab_coefficients(az_e.b[1:-1], az_e.c[1:-1], sz_e, axis=2, ndim=3)
+    bcx_h = slab_coefficients(ax_h.b, ax_h.c, sx_h, axis=0, ndim=3)
+    bcy_h = slab_coefficients(ay_h.b, ay_h.c, sy_h, axis=1, ndim=3)
+    bcz_h = slab_coefficients(az_h.b, az_h.c, sz_h, axis=2, ndim=3)
 
     inv_dx, inv_dy, inv_dz = 1.0 / dx, 1.0 / dy, 1.0 / dz
     dt_mu = dt / MU0
@@ -379,25 +428,26 @@ def simulate_3d(
     def step(state: _State3D, xs):
         ex, ey, ez = state.ex, state.ey, state.ez
         hx, hy, hz = state.hx, state.hy, state.hz
+        psi = state.psi
 
         # --- H update: E^n -> H^{n+1/2} ---------------------------------
         dey_dz = (ey[:, :, 1:] - ey[:, :, :-1]) * inv_dz  # (nx, ny-1, nz-1)
         dez_dy = (ez[:, 1:, :] - ez[:, :-1, :]) * inv_dy
-        p_hxz = bz_h * state.p_hxz + cz_h * dey_dz
-        p_hxy = by_h * state.p_hxy + cy_h * dez_dy
-        hx = hx + dt_mu * (dey_dz * kz_h + p_hxz - dez_dy * ky_h - p_hxy)
+        p_hxz, t_hxz = psi_step(psi.hxz, dey_dz, bcz_h, sz_h, 2, kz_h)
+        p_hxy, t_hxy = psi_step(psi.hxy, dez_dy, bcy_h, sy_h, 1, ky_h)
+        hx = hx + dt_mu * (t_hxz - t_hxy)
 
         dez_dx = (ez[1:, :, :] - ez[:-1, :, :]) * inv_dx  # (nx-1, ny, nz-1)
         dex_dz = (ex[:, :, 1:] - ex[:, :, :-1]) * inv_dz
-        p_hyx = bx_h * state.p_hyx + cx_h * dez_dx
-        p_hyz = bz_h * state.p_hyz + cz_h * dex_dz
-        hy = hy + dt_mu * (dez_dx * kx_h + p_hyx - dex_dz * kz_h - p_hyz)
+        p_hyx, t_hyx = psi_step(psi.hyx, dez_dx, bcx_h, sx_h, 0, kx_h)
+        p_hyz, t_hyz = psi_step(psi.hyz, dex_dz, bcz_h, sz_h, 2, kz_h)
+        hy = hy + dt_mu * (t_hyx - t_hyz)
 
         dex_dy = (ex[:, 1:, :] - ex[:, :-1, :]) * inv_dy  # (nx-1, ny-1, nz)
         dey_dx = (ey[1:, :, :] - ey[:-1, :, :]) * inv_dx
-        p_hzy = by_h * state.p_hzy + cy_h * dex_dy
-        p_hzx = bx_h * state.p_hzx + cx_h * dey_dx
-        hz = hz + dt_mu * (dex_dy * ky_h + p_hzy - dey_dx * kx_h - p_hzx)
+        p_hzy, t_hzy = psi_step(psi.hzy, dex_dy, bcy_h, sy_h, 1, ky_h)
+        p_hzx, t_hzx = psi_step(psi.hzx, dey_dx, bcx_h, sx_h, 0, kx_h)
+        hz = hz + dt_mu * (t_hzy - t_hzx)
 
         if has_port:
             # Ampere loop around the port edge at t = (n+1/2) dt.
@@ -408,23 +458,23 @@ def simulate_3d(
         # --- E update: H^{n+1/2} -> E^{n+1} (interior; PEC shell fixed) --
         dhz_dy = (hz[:, 1:, :] - hz[:, :-1, :])[:, :, 1:-1] * inv_dy  # (nx-1, ny-2, nz-2)
         dhy_dz = (hy[:, :, 1:] - hy[:, :, :-1])[:, 1:-1, :] * inv_dz
-        p_exy = by_e * state.p_exy + cy_e * dhz_dy
-        p_exz = bz_e * state.p_exz + cz_e * dhy_dz
-        curl_x = dhz_dy * ky_e + p_exy - dhy_dz * kz_e - p_exz
+        p_exy, t_exy = psi_step(psi.exy, dhz_dy, bcy_e, sy_e, 1, ky_e)
+        p_exz, t_exz = psi_step(psi.exz, dhy_dz, bcz_e, sz_e, 2, kz_e)
+        curl_x = t_exy - t_exz
         ex = ex.at[:, 1:-1, 1:-1].set(ca_ex * ex[:, 1:-1, 1:-1] + cb_ex * curl_x)
 
         dhx_dz = (hx[:, :, 1:] - hx[:, :, :-1])[1:-1, :, :] * inv_dz  # (nx-2, ny-1, nz-2)
         dhz_dx = (hz[1:, :, :] - hz[:-1, :, :])[:, :, 1:-1] * inv_dx
-        p_eyz = bz_e * state.p_eyz + cz_e * dhx_dz
-        p_eyx = bx_e * state.p_eyx + cx_e * dhz_dx
-        curl_y = dhx_dz * kz_e + p_eyz - dhz_dx * kx_e - p_eyx
+        p_eyz, t_eyz = psi_step(psi.eyz, dhx_dz, bcz_e, sz_e, 2, kz_e)
+        p_eyx, t_eyx = psi_step(psi.eyx, dhz_dx, bcx_e, sx_e, 0, kx_e)
+        curl_y = t_eyz - t_eyx
         ey = ey.at[1:-1, :, 1:-1].set(ca_ey * ey[1:-1, :, 1:-1] + cb_ey * curl_y)
 
         dhy_dx = (hy[1:, :, :] - hy[:-1, :, :])[:, 1:-1, :] * inv_dx  # (nx-2, ny-2, nz-1)
         dhx_dy = (hx[:, 1:, :] - hx[:, :-1, :])[1:-1, :, :] * inv_dy
-        p_ezx = bx_e * state.p_ezx + cx_e * dhy_dx
-        p_ezy = by_e * state.p_ezy + cy_e * dhx_dy
-        curl_z = dhy_dx * kx_e + p_ezx - dhx_dy * ky_e - p_ezy
+        p_ezx, t_ezx = psi_step(psi.ezx, dhy_dx, bcx_e, sx_e, 0, kx_e)
+        p_ezy, t_ezy = psi_step(psi.ezy, dhx_dy, bcy_e, sy_e, 1, ky_e)
+        curl_z = t_ezx - t_ezy
         ez_prev = ez
         ez = ez.at[1:-1, 1:-1, :].set(ca_ez * ez[1:-1, 1:-1, :] + cb_ez * curl_z)
 
@@ -456,8 +506,10 @@ def simulate_3d(
 
         state = _State3D(
             ex, ey, ez, hx, hy, hz,
-            p_exy, p_exz, p_eyx, p_eyz, p_ezx, p_ezy,
-            p_hxy, p_hxz, p_hyx, p_hyz, p_hzx, p_hzy,
+            _Psi3D(
+                p_exy, p_exz, p_eyx, p_eyz, p_ezx, p_ezy,
+                p_hxy, p_hxz, p_hyx, p_hyz, p_hzx, p_hzy,
+            ),
             dft_acc,
         )
         out = {"probe": ez[probe_idx[:, 0], probe_idx[:, 1], probe_idx[:, 2]]}
@@ -484,18 +536,7 @@ def simulate_3d(
         hx=zeros((nx, ny - 1, nz - 1)),
         hy=zeros((nx - 1, ny, nz - 1)),
         hz=zeros((nx - 1, ny - 1, nz)),
-        p_exy=zeros((nx - 1, ny - 2, nz - 2)),
-        p_exz=zeros((nx - 1, ny - 2, nz - 2)),
-        p_eyx=zeros((nx - 2, ny - 1, nz - 2)),
-        p_eyz=zeros((nx - 2, ny - 1, nz - 2)),
-        p_ezx=zeros((nx - 2, ny - 2, nz - 1)),
-        p_ezy=zeros((nx - 2, ny - 2, nz - 1)),
-        p_hxy=zeros((nx, ny - 1, nz - 1)),
-        p_hxz=zeros((nx, ny - 1, nz - 1)),
-        p_hyx=zeros((nx - 1, ny, nz - 1)),
-        p_hyz=zeros((nx - 1, ny, nz - 1)),
-        p_hzx=zeros((nx - 1, ny - 1, nz)),
-        p_hzy=zeros((nx - 1, ny - 1, nz)),
+        psi=_init_psi(nx, ny, nz, npml, dtype),
         dft=dft0,
     )
 

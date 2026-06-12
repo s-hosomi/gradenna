@@ -64,7 +64,14 @@ import jax.numpy as jnp
 import numpy as np
 
 from gradenna.constants import EPS0, MU0
-from gradenna.cpml import CPMLSpec, axis_coefficients
+from gradenna.cpml import (
+    CPMLSpec,
+    PsiSlabs,
+    axis_coefficients,
+    psi_step,
+    slab_coefficients,
+    slab_slices,
+)
 from gradenna.grid import Grid2D
 
 #: Unit length [m] of the 2D TM slice; port voltage is V = -Ez * DZ.
@@ -119,14 +126,35 @@ class SimResult(NamedTuple):
     dft_hy: jnp.ndarray | None = None
 
 
+class _Psi2D(NamedTuple):
+    """CPML psi variables, each as a low/high PML slab pair (note 14 Sec. 5.3).
+
+    Only the slabs along the stretched axis are stored (the slabs span the
+    full transverse extent, corners included); outside them psi == 0.
+    """
+
+    ezx: PsiSlabs  # (npml, ny-2) x2 — x-stretched, interior Ez rows
+    ezy: PsiSlabs  # (nx-2, npml) x2 — y-stretched, interior Ez columns
+    hyx: PsiSlabs  # (npml, ny)   x2 — x-stretched, Hy points
+    hxy: PsiSlabs  # (nx, npml)   x2 — y-stretched, Hx points
+
+
+def _init_psi(nx: int, ny: int, npml: int, dtype) -> _Psi2D:
+    """Zero-initialized slab-stored psi state (note 14 Sec. 5.3)."""
+    pair = lambda shape: PsiSlabs(jnp.zeros(shape, dtype), jnp.zeros(shape, dtype))  # noqa: E731
+    return _Psi2D(
+        ezx=pair((npml, ny - 2)),
+        ezy=pair((nx - 2, npml)),
+        hyx=pair((npml, ny)),
+        hxy=pair((nx, npml)),
+    )
+
+
 class _State(NamedTuple):
     ez: jnp.ndarray
     hx: jnp.ndarray
     hy: jnp.ndarray
-    p_ezx: jnp.ndarray
-    p_ezy: jnp.ndarray
-    p_hyx: jnp.ndarray
-    p_hxy: jnp.ndarray
+    psi: _Psi2D
 
 
 def field_energy(ez, hx, hy, eps, grid: Grid2D):
@@ -274,6 +302,23 @@ def simulate_tm(
     cy_e = axis_coefficients(ny, grid.dy, dt, cpml, half=False, dtype=dtype)
     cy_h = axis_coefficients(ny, grid.dy, dt, cpml, half=True, dtype=dtype)
 
+    # Slab (strip) storage of psi (note 14 Sec. 5.3): static slices of the
+    # two PML slabs along each stretched axis, plus the b/c tables restricted
+    # to them. 1/kappa stays full-size (== 1 outside the PML).
+    npml = cpml.thickness
+    sx_e = slab_slices(nx - 2, npml)  # E-type psi live on the PEC interior
+    sy_e = slab_slices(ny - 2, npml)
+    sx_h = slab_slices(nx - 1, npml)  # H-type psi live on the half grid
+    sy_h = slab_slices(ny - 1, npml)
+    bc_ezx = slab_coefficients(cx_e.b[1:-1], cx_e.c[1:-1], sx_e, axis=0, ndim=2)
+    bc_ezy = slab_coefficients(cy_e.b[1:-1], cy_e.c[1:-1], sy_e, axis=1, ndim=2)
+    bc_hyx = slab_coefficients(cx_h.b, cx_h.c, sx_h, axis=0, ndim=2)
+    bc_hxy = slab_coefficients(cy_h.b, cy_h.c, sy_h, axis=1, ndim=2)
+    kx_e = cx_e.inv_kappa[1:-1, None]
+    ky_e = cy_e.inv_kappa[None, 1:-1]
+    kx_h = cx_h.inv_kappa[:, None]
+    ky_h = cy_h.inv_kappa[None, :]
+
     inv_dx, inv_dy = 1.0 / grid.dx, 1.0 / grid.dy
     dt_mu = dt / MU0
     # Discretized line current: Jz = I / (dx dy) over one cell.
@@ -303,15 +348,15 @@ def simulate_tm(
 
     def step(carry, x):
         state, acc = carry
-        ez, hx, hy, p_ezx, p_ezy, p_hyx, p_hxy = state
+        ez, hx, hy, psi = state
 
         dez_dy = (ez[:, 1:] - ez[:, :-1]) * inv_dy  # (nx, ny-1) at Hx points
-        p_hxy = cy_h.b[None, :] * p_hxy + cy_h.c[None, :] * dez_dy
-        hx = hx - dt_mu * (dez_dy * cy_h.inv_kappa[None, :] + p_hxy)
+        p_hxy, term_hx = psi_step(psi.hxy, dez_dy, bc_hxy, sy_h, 1, ky_h)
+        hx = hx - dt_mu * term_hx
 
         dez_dx = (ez[1:, :] - ez[:-1, :]) * inv_dx  # (nx-1, ny) at Hy points
-        p_hyx = cx_h.b[:, None] * p_hyx + cx_h.c[:, None] * dez_dx
-        hy = hy + dt_mu * (dez_dx * cx_h.inv_kappa[:, None] + p_hyx)
+        p_hyx, term_hy = psi_step(psi.hyx, dez_dx, bc_hyx, sx_h, 0, kx_h)
+        hy = hy + dt_mu * term_hy
 
         if n_ports:
             # Ampere loop around the port cell with H at (n+1/2) dt
@@ -323,14 +368,9 @@ def simulate_tm(
 
         dhy_dx = (hy[1:, 1:-1] - hy[:-1, 1:-1]) * inv_dx  # (nx-2, ny-2)
         dhx_dy = (hx[1:-1, 1:] - hx[1:-1, :-1]) * inv_dy
-        p_ezx = cx_e.b[1:-1, None] * p_ezx + cx_e.c[1:-1, None] * dhy_dx
-        p_ezy = cy_e.b[None, 1:-1] * p_ezy + cy_e.c[None, 1:-1] * dhx_dy
-        curl = (
-            dhy_dx * cx_e.inv_kappa[1:-1, None]
-            + p_ezx
-            - dhx_dy * cy_e.inv_kappa[None, 1:-1]
-            - p_ezy
-        )
+        p_ezx, term_x = psi_step(psi.ezx, dhy_dx, bc_ezx, sx_e, 0, kx_e)
+        p_ezy, term_y = psi_step(psi.ezy, dhx_dy, bc_ezy, sy_e, 1, ky_e)
+        curl = term_x - term_y
         ez = ez.at[1:-1, 1:-1].set(ca[1:-1, 1:-1] * ez[1:-1, 1:-1] + cb[1:-1, 1:-1] * curl)
         ez = ez.at[src_idx[:, 0], src_idx[:, 1]].add(-cb_src * x["j"])
 
@@ -348,7 +388,7 @@ def simulate_tm(
                 acc[2] + x["ph_h"][:, None, None] * hy,
             )
 
-        state = _State(ez, hx, hy, p_ezx, p_ezy, p_hyx, p_hxy)
+        state = _State(ez, hx, hy, _Psi2D(p_ezx, p_ezy, p_hyx, p_hxy))
         out["probe"] = ez[probe_idx[:, 0], probe_idx[:, 1]]
         if record_energy:
             out["energy"] = field_energy(ez, hx, hy, eps, grid)
@@ -358,10 +398,7 @@ def simulate_tm(
         ez=jnp.zeros((nx, ny), dtype),
         hx=jnp.zeros((nx, ny - 1), dtype),
         hy=jnp.zeros((nx - 1, ny), dtype),
-        p_ezx=jnp.zeros((nx - 2, ny - 2), dtype),
-        p_ezy=jnp.zeros((nx - 2, ny - 2), dtype),
-        p_hyx=jnp.zeros((nx - 1, ny), dtype),
-        p_hxy=jnp.zeros((nx, ny - 1), dtype),
+        psi=_init_psi(nx, ny, npml, dtype),
     )
     acc0 = None
     if n_freq:

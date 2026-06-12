@@ -57,6 +57,108 @@ class AxisCoefficients(NamedTuple):
     inv_kappa: jnp.ndarray
 
 
+class PsiSlabs(NamedTuple):
+    """One CPML psi variable stored as a low/high PML slab pair.
+
+    psi_w (the auxiliary variable of the stretched axis w) is identically
+    zero outside the PML because c_w = 0 there, so only the two slabs of
+    `thickness` samples at each end of axis w need storage. This is the
+    strip storage of docs/research/14-cpml-theory.md Sec. 5.3: with full
+    arrays the psi set adds ~133% to the 2D scan carry (and ~200% in 3D),
+    with strips only a few percent — which is what keeps the reverse-mode
+    AD tape affordable on a GPU.
+    """
+
+    lo: jnp.ndarray
+    hi: jnp.ndarray
+
+
+class SlabCoefficients(NamedTuple):
+    """b/c tables restricted to the two PML slabs of one stretched axis,
+    reshaped for broadcasting against the field arrays."""
+
+    b_lo: jnp.ndarray
+    c_lo: jnp.ndarray
+    b_hi: jnp.ndarray
+    c_hi: jnp.ndarray
+
+
+def slab_slices(n: int, thickness: int) -> tuple[slice, slice]:
+    """Static low/high PML slab slices along an axis with `n` sample positions.
+
+    Outside these two slabs c_w = 0 and psi_w stays identically zero
+    (docs/research/14-cpml-theory.md Sec. 5.3), so psi values and their
+    b/c tables are only kept on `thickness` samples per side. With
+    ``thickness=0`` (PEC box) both slices are empty and every slab
+    operation degenerates to a no-op on zero-size arrays.
+    """
+    if not 0 <= 2 * thickness <= n:
+        raise ValueError(f"PML slab thickness {thickness} too large for axis length {n}")
+    return slice(0, thickness), slice(n - thickness, n)
+
+
+def slab_coefficients(
+    b: jnp.ndarray,
+    c: jnp.ndarray,
+    slabs: tuple[slice, slice],
+    axis: int,
+    ndim: int,
+) -> SlabCoefficients:
+    """Slice 1D b/c tables to the two PML slabs and broadcast to `ndim` dims.
+
+    `b`/`c` must already be sampled at the positions of the psi array along
+    its stretched axis (e.g. pre-sliced to the PEC interior for E-type psi).
+    """
+    def expand(a: jnp.ndarray) -> jnp.ndarray:
+        shape = [1] * ndim
+        shape[axis] = a.shape[0]
+        return a.reshape(shape)
+
+    lo, hi = slabs
+    return SlabCoefficients(expand(b[lo]), expand(c[lo]), expand(b[hi]), expand(c[hi]))
+
+
+def psi_step(
+    psi: PsiSlabs,
+    diff: jnp.ndarray,
+    coeffs: SlabCoefficients,
+    slabs: tuple[slice, slice],
+    axis: int,
+    inv_kappa: jnp.ndarray,
+) -> tuple[PsiSlabs, jnp.ndarray]:
+    """One CPML recursion on slab-stored psi (note 14 Sec. 5.3 / 7.2).
+
+    Updates psi^n = b psi^{n-1} + c diff^n on the two PML slabs of the
+    stretched axis and returns ``(psi_new, diff / kappa + psi_new)``. The
+    full-size term is assembled as concatenate(lo-slab, middle, hi-slab)
+    along the stretched axis; outside the slabs psi = 0 and kappa = 1
+    *exactly* (rho = 0 in the grading), so the middle block is the plain
+    spatial difference, untouched. Benchmarked on CPU against (a)
+    scatter-adding the slabs into ``diff * inv_kappa`` and (b) in-place
+    static-slice writes into `diff`: the concatenate fuses with the
+    producers of all three regions and was the fastest (and the only
+    variant at parity with the old full-array psi arithmetic).
+    """
+    lo, hi = slabs
+    if lo.stop == lo.start:  # thickness=0 (PEC box): kappa = 1 everywhere
+        return psi, diff
+    idx = lambda s: (slice(None),) * axis + (s,)  # noqa: E731
+    mid = slice(lo.stop, hi.start)
+    psi_new = PsiSlabs(
+        lo=coeffs.b_lo * psi.lo + coeffs.c_lo * diff[idx(lo)],
+        hi=coeffs.b_hi * psi.hi + coeffs.c_hi * diff[idx(hi)],
+    )
+    term = jnp.concatenate(
+        [
+            diff[idx(lo)] * inv_kappa[idx(lo)] + psi_new.lo,
+            diff[idx(mid)],
+            diff[idx(hi)] * inv_kappa[idx(hi)] + psi_new.hi,
+        ],
+        axis=axis,
+    )
+    return psi_new, term
+
+
 def axis_coefficients(
     n: int,
     delta: float,
