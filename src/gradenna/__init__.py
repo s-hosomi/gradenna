@@ -12,8 +12,12 @@ from gradenna.estimate import fdtd3d_memory_estimate, fits_gpu, gpu_fit_report
 from gradenna.fdtd2d import Port, SimResult, field_energy, simulate_tm
 from gradenna.freq_adjoint import (
     FreqPhasors,
+    FreqPhasors3D,
     exact_design_gradient,
+    exact_design_gradient_3d,
     freq_adjoint_gradient,
+    freq_adjoint_gradient_3d,
+    simulate_3d_freq,
     simulate_tm_freq,
 )
 from gradenna.fdtd3d import (
@@ -64,6 +68,7 @@ __all__ = [
     "CPMLSpec",
     "DesignTransform",
     "FreqPhasors",
+    "FreqPhasors3D",
     "Grid2D",
     "Grid3D",
     "Port",
@@ -76,11 +81,13 @@ __all__ = [
     "directivity_2d",
     "directivity_3d",
     "exact_design_gradient",
+    "exact_design_gradient_3d",
     "fdtd3d_memory_estimate",
     "field_energy",
     "field_energy_3d",
     "fits_gpu",
     "freq_adjoint_gradient",
+    "freq_adjoint_gradient_3d",
     "gain",
     "gpu_fit_report",
     "gaussian",
@@ -105,6 +112,7 @@ __all__ = [
     "sheet_conductivity",
     "sigma_from_density",
     "simulate_3d",
+    "simulate_3d_freq",
     "simulate_tm",
     "simulate_tm_freq",
     "tanh_projection",

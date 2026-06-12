@@ -262,6 +262,16 @@ def simulate_3d(
     sigma=0.0,
     source_ijk=None,
     source_current=None,
+    source_x_ijk=None,
+    source_x_current=None,
+    source_y_ijk=None,
+    source_y_current=None,
+    mx_ijk=None,
+    mx_current=None,
+    my_ijk=None,
+    my_current=None,
+    mz_ijk=None,
+    mz_current=None,
     port_ijk=None,
     port_voltage=None,
     port_resistance: float = 50.0,
@@ -283,6 +293,19 @@ def simulate_3d(
             over one cell (an infinitesimal dipole of length dz).
         source_current: currents I(t) [A] sampled at t = (n+1/2) dt; shape
             (n_steps,) or (n_steps, n_sources).
+        source_x_ijk, source_x_current: x-directed point currents on the
+            Ex(i+1/2, j, k) edges, injected as Jx = I/(dy dz). The transverse
+            area is dy*dz (not dx*dy as for Jz) — the cross-section of the
+            Ex curl loop (note 16 Sec. 2.3, pitfall 1). Backward compatible
+            (no effect when omitted).
+        source_y_ijk, source_y_current: y-directed point currents on the
+            Ey(i, j+1/2, k) edges, injected as Jy = I/(dx dz).
+        mx_ijk, mx_current: magnetic currents on the Hx(i, j+1/2, k+1/2)
+            edges, sampled at t = (n+1/2) dt, injected as Hx -= (dt/mu) Mx
+            (the mu dH/dt = -curl E - M term). Used by the 3D frequency-domain
+            adjoint (:mod:`gradenna.freq_adjoint`); backward compatible.
+        my_ijk, my_current: same for Hy(i+1/2, j, k+1/2), Hy -= (dt/mu) My.
+        mz_ijk, mz_current: same for Hz(i+1/2, j+1/2, k), Hz -= (dt/mu) Mz.
         port_ijk: single z-directed lumped RVS port Ez edge (i, j, k), 1-cell
             gap, or None.
         port_voltage: Thevenin source voltage Vs(t) [V] sampled at
@@ -322,8 +345,24 @@ def simulate_3d(
         raise ValueError("source_ijk and source_current must be given together")
     if has_port != (port_voltage is not None):
         raise ValueError("port_ijk and port_voltage must be given together")
-    if not (has_src or has_port):
-        raise ValueError("at least one of source_current / port_voltage is required")
+
+    # Additional electric- and magnetic-current channels (Jx/Jy and Mx/My/Mz),
+    # all optional and backward compatible. Each is an (index array, waveform)
+    # pair; an absent channel resolves to ((0, 3) index, None waveform).
+    def _check_pair(idx, cur, name):
+        if (idx is None) != (cur is None):
+            raise ValueError(f"{name}_ijk and {name}_current must be given together")
+        return idx is not None
+
+    has_jx = _check_pair(source_x_ijk, source_x_current, "source_x")
+    has_jy = _check_pair(source_y_ijk, source_y_current, "source_y")
+    has_mx = _check_pair(mx_ijk, mx_current, "mx")
+    has_my = _check_pair(my_ijk, my_current, "my")
+    has_mz = _check_pair(mz_ijk, mz_current, "mz")
+    has_extra = has_jx or has_jy or has_mx or has_my or has_mz
+
+    if not (has_src or has_port or has_extra):
+        raise ValueError("at least one current/voltage source is required")
 
     probe_idx = _as_index_array_3d(probe_ijk, "probe_ijk", grid, margin=0)
 
@@ -348,16 +387,51 @@ def simulate_3d(
         if port_resistance <= 0.0:
             raise ValueError("port_resistance must be positive")
 
+    # Resolve the extra current/magnetic-current channels to (idx, waveform).
+    def _setup_channel(idx_in, cur_in, present):
+        nonlocal n_steps
+        if not present:
+            return np.zeros((0, 3), np.int32), None
+        idx = np.asarray(idx_in, np.int32).reshape(-1, 3)
+        cur = jnp.asarray(cur_in)
+        if cur.ndim == 1:
+            cur = cur[:, None]
+        if n_steps is None:
+            n_steps = cur.shape[0]
+        elif cur.shape[0] != n_steps:
+            raise ValueError(
+                f"channel waveform length {cur.shape[0]} does not match n_steps {n_steps}"
+            )
+        if cur.shape[1] != idx.shape[0]:
+            raise ValueError(
+                f"channel waveform has {cur.shape[1]} columns for {idx.shape[0]} sources"
+            )
+        return idx, cur
+
+    jx_idx, jx_cur = _setup_channel(source_x_ijk, source_x_current, has_jx)
+    jy_idx, jy_cur = _setup_channel(source_y_ijk, source_y_current, has_jy)
+    mx_idx, mx_cur = _setup_channel(mx_ijk, mx_current, has_mx)
+    my_idx, my_cur = _setup_channel(my_ijk, my_current, has_my)
+    mz_idx, mz_cur = _setup_channel(mz_ijk, mz_current, has_mz)
+
     parts = [eps_r, sigma]
     if has_src:
         parts.append(source_current)
     if has_port:
         parts.append(port_voltage)
+    for c in (jx_cur, jy_cur, mx_cur, my_cur, mz_cur):
+        if c is not None:
+            parts.append(c)
     dtype = jnp.result_type(*parts)
     if has_src:
         source_current = source_current.astype(dtype)
     if has_port:
         port_voltage = port_voltage.astype(dtype)
+    jx_cur = None if jx_cur is None else jx_cur.astype(dtype)
+    jy_cur = None if jy_cur is None else jy_cur.astype(dtype)
+    mx_cur = None if mx_cur is None else mx_cur.astype(dtype)
+    my_cur = None if my_cur is None else my_cur.astype(dtype)
+    mz_cur = None if mz_cur is None else mz_cur.astype(dtype)
 
     eps = EPS0 * jnp.broadcast_to(jnp.asarray(eps_r, dtype), (nx, ny, nz))
     sig = jnp.broadcast_to(jnp.asarray(sigma, dtype), (nx, ny, nz))
@@ -408,6 +482,12 @@ def simulate_3d(
     if has_src:
         # Discretized point current: Jz = I / (dx dy) over one cell.
         cb_src = cb[src_idx[:, 0], src_idx[:, 1], src_idx[:, 2]] * (inv_dx * inv_dy)
+    # Jx/Jy point currents: each is divided by the cross-section of *its* curl
+    # loop (note 16 Sec. 2.3, pitfall 1): Jx area dy*dz, Jy area dx*dz, Jz dx*dy.
+    if has_jx:
+        cb_jx = cb[jx_idx[:, 0], jx_idx[:, 1], jx_idx[:, 2]] * (inv_dy * inv_dz)
+    if has_jy:
+        cb_jy = cb[jy_idx[:, 0], jy_idx[:, 1], jy_idx[:, 2]] * (inv_dx * inv_dz)
     if has_port:
         # Semi-implicit RVS coefficients (research note 12, with conductivity).
         eps_p = eps[pi, pj, pk]
@@ -450,18 +530,25 @@ def simulate_3d(
         p_hxz, t_hxz = psi_step(psi.hxz, dey_dz, bcz_h, sz_h, 2, kz_h)
         p_hxy, t_hxy = psi_step(psi.hxy, dez_dy, bcy_h, sy_h, 1, ky_h)
         hx = hx + dt_mu * (t_hxz - t_hxy)
+        if has_mx:
+            # mu dHx/dt = -curl E - Mx  ->  Hx -= (dt/mu) Mx.
+            hx = hx.at[mx_idx[:, 0], mx_idx[:, 1], mx_idx[:, 2]].add(-dt_mu * xs["mx"])
 
         dez_dx = (ez[1:, :, :] - ez[:-1, :, :]) * inv_dx  # (nx-1, ny, nz-1)
         dex_dz = (ex[:, :, 1:] - ex[:, :, :-1]) * inv_dz
         p_hyx, t_hyx = psi_step(psi.hyx, dez_dx, bcx_h, sx_h, 0, kx_h)
         p_hyz, t_hyz = psi_step(psi.hyz, dex_dz, bcz_h, sz_h, 2, kz_h)
         hy = hy + dt_mu * (t_hyx - t_hyz)
+        if has_my:
+            hy = hy.at[my_idx[:, 0], my_idx[:, 1], my_idx[:, 2]].add(-dt_mu * xs["my"])
 
         dex_dy = (ex[:, 1:, :] - ex[:, :-1, :]) * inv_dy  # (nx-1, ny-1, nz)
         dey_dx = (ey[1:, :, :] - ey[:-1, :, :]) * inv_dx
         p_hzy, t_hzy = psi_step(psi.hzy, dex_dy, bcy_h, sy_h, 1, ky_h)
         p_hzx, t_hzx = psi_step(psi.hzx, dey_dx, bcx_h, sx_h, 0, kx_h)
         hz = hz + dt_mu * (t_hzy - t_hzx)
+        if has_mz:
+            hz = hz.at[mz_idx[:, 0], mz_idx[:, 1], mz_idx[:, 2]].add(-dt_mu * xs["mz"])
 
         if has_port:
             # Ampere loop around the port edge at t = (n+1/2) dt.
@@ -476,6 +563,8 @@ def simulate_3d(
         p_exz, t_exz = psi_step(psi.exz, dhy_dz, bcz_e, sz_e, 2, kz_e)
         curl_x = t_exy - t_exz
         ex = ex.at[:, 1:-1, 1:-1].set(ca_ex * ex[:, 1:-1, 1:-1] + cb_ex * curl_x)
+        if has_jx:
+            ex = ex.at[jx_idx[:, 0], jx_idx[:, 1], jx_idx[:, 2]].add(-cb_jx * xs["jx"])
 
         dhx_dz = (hx[:, :, 1:] - hx[:, :, :-1])[1:-1, :, :] * inv_dz  # (nx-2, ny-1, nz-2)
         dhz_dx = (hz[1:, :, :] - hz[:-1, :, :])[:, :, 1:-1] * inv_dx
@@ -483,6 +572,8 @@ def simulate_3d(
         p_eyx, t_eyx = psi_step(psi.eyx, dhz_dx, bcx_e, sx_e, 0, kx_e)
         curl_y = t_eyz - t_eyx
         ey = ey.at[1:-1, :, 1:-1].set(ca_ey * ey[1:-1, :, 1:-1] + cb_ey * curl_y)
+        if has_jy:
+            ey = ey.at[jy_idx[:, 0], jy_idx[:, 1], jy_idx[:, 2]].add(-cb_jy * xs["jy"])
 
         dhy_dx = (hy[1:, :, :] - hy[:-1, :, :])[:, 1:-1, :] * inv_dx  # (nx-2, ny-2, nz-1)
         dhx_dy = (hx[:, 1:, :] - hx[:, :-1, :])[1:-1, :, :] * inv_dy
@@ -559,6 +650,16 @@ def simulate_3d(
         xs["i_src"] = source_current
     if has_port:
         xs["vs"] = port_voltage
+    if has_jx:
+        xs["jx"] = jx_cur
+    if has_jy:
+        xs["jy"] = jy_cur
+    if has_mx:
+        xs["mx"] = mx_cur
+    if has_my:
+        xs["my"] = my_cur
+    if has_mz:
+        xs["mz"] = mz_cur
     if has_dft:
         xs["e_phase"] = e_phase
         xs["h_phase"] = h_phase
