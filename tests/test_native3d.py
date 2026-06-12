@@ -21,6 +21,7 @@ Run::
     JAX_ENABLE_X64=1 .venv/bin/python -m pytest tests/test_native3d.py -q -s
 """
 
+import os
 import time
 
 import numpy as np
@@ -254,4 +255,7 @@ def test_benchmark_throughput(capsys):
 
     # Soft acceptance: 64^3 f32 n_freq=0 must clear 1.5x (target 1000 Mc/s).
     key = [r for r in rows if r[0] == 64 and r[1] == "float32" and r[2] == 0]
+    # See test_native.py: no performance gate on shared CI runners.
+    if os.environ.get("CI"):
+        pytest.skip("performance assertion skipped on shared CI runners")
     assert key and key[0][6] >= 1.5, f"native 64^3 f32 speedup {key[0][6]:.2f}x < 1.5x"
