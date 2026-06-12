@@ -10,9 +10,9 @@
   <img src="assets/optimization.gif" width="460" alt="2.45 GHz アンテナが一様グレーから勾配降下で育つ様子"/>
 </p>
 <p align="center">
-  <em>一様グレーの設計領域からアンテナが生えてくる。微分可能な Maxwell ソルバーを通した
-  Adam 200 イテレーションで 2.45 GHz の放射電力を最大化 — 目的関数は初期設計の
-  <strong>63,000 倍</strong>に。形状は一切手で描いていません。</em>
+  <em>一様グレーの設計領域からアンテナが生えてくる。104×104 ピクセルの設計領域（1 mm セル）を
+  微分可能な Maxwell ソルバーごしに Adam 200 イテレーションで最適化し、2.45 GHz の放射電力を
+  最大化 — 目的関数は初期設計の <strong>58,000 倍</strong>に。形状は一切手で描いていません。</em>
 </p>
 
 gradenna は RF/マイクロ波アンテナ設計のための、完全微分可能な電磁界（FDTD）ソルバー＋トポロジー最適化ツールキットです。Yee 更新・CPML 吸収境界・50Ω 集中ポート・ランニング DFT による S パラメータ・近傍場→遠方場変換（NTFF）までのシミュレーション全体が単一の JAX 計算グラフになっており、`jax.grad` 一発で任意の目的関数（S11・放射電力・指向性・利得）の**全設計ピクセル同時の**厳密な随伴勾配が得られます:
@@ -53,15 +53,17 @@ grad = jax.grad(neg_radiated_power)(0.5 * jnp.ones((52, 52)))  # 逆方向パス
     </td>
     <td width="50%">
       <img src="assets/viewer_live_fdtd.png" alt="ブラウザ内ライブ FDTD"/>
-      <p align="center"><sub><b>Live FDTD</b> — wasm カーネルがブラウザ内で Maxwell を
-      時間発展: ソース移動・銅の描画・ダブルスリット/放物面ミラーのシーン</sub></p>
+      <p align="center"><sub><b>Live FDTD</b> — 最適化されたアンテナを wasm カーネルが
+      ライブ駆動。時間平均強度に指向性ビームが浮かび上がる。銅の描画・ソース移動・
+      ダブルスリット/ミラーのシーンも</sub></p>
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="assets/viewer_farfield.png" alt="3D 遠方界指向性ローブ"/>
-      <p align="center"><sub><b>Far field</b> — 2.45 GHz パッチの NTFF 指向性ローブ。
-      回転可、線形/dB スケール切替</sub></p>
+      <img src="assets/viewer_antenna3d.png" alt="Antenna 3D: 形状・近傍場・遠方界"/>
+      <p align="center"><sub><b>Antenna 3D</b> — 実寸のパッチ形状、3D 計算の |E| 近傍場が
+      ドラッグできるスライス面に発光し（放射端のフリンジング場が見える）、その上空に
+      遠方界ローブ — 物理のストーリー全体がひとつの回転できるシーンに</sub></p>
     </td>
     <td width="50%">
       <img src="assets/viewer_s11.png" alt="S11 の openEMS 重ね描き"/>
@@ -126,7 +128,7 @@ grad = jax.grad(neg_radiated_power)(0.5 * jnp.ones((52, 52)))  # 逆方向パス
 
 | スクリプト | 内容 |
 |---|---|
-| `examples/optimize_2d_antenna.py` | 冒頭の GIF: 2.45 GHz 放射エネルギー最大化、最終設計は完全二値 |
+| `examples/optimize_2d_antenna.py` | 成長デモ: 2.45 GHz 放射エネルギー最大化、最終設計は完全二値（冒頭の GIF は同じ問題の 1 mm 解像度版 — `scripts/export_viz.py`） |
 | `examples/optimize_directivity.py` | 遠方界変換ごしのビーム整形: D(0°) 0.31 → 4.47、F/B 比 16.8 dB |
 | `examples/optimize_multiband.py` | 2.0 + 3.0 GHz 同時の最悪帯域（softmin）放射電力 |
 | `examples/optimize_beamsteering.py` | **ビームステアリング**: 4 素子 λ/2 アレイの複素給電重みを遠方界変換ごしに最適化 |

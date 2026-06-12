@@ -1,13 +1,13 @@
 import { OptimizationView } from "./views/OptimizationView";
 import { LiveFdtdView } from "./views/LiveFdtdView";
-import { FarField3DView } from "./views/FarField3DView";
+import { Antenna3DView } from "./views/Antenna3DView";
 import { S11View } from "./views/S11View";
 import { T, el } from "./ui";
 
 const TABS = [
   { id: "optimization", label: "Optimization" },
   { id: "live-fdtd", label: "Live FDTD" },
-  { id: "farfield3d", label: "Far Field 3D" },
+  { id: "antenna3d", label: "Antenna 3D" },
   { id: "s11", label: "S11" },
 ] as const;
 
@@ -142,8 +142,8 @@ class App {
         view = v;
         break;
       }
-      case "farfield3d": {
-        const v = new FarField3DView(viewContainer);
+      case "antenna3d": {
+        const v = new Antenna3DView(viewContainer);
         await v.init();
         view = v;
         break;

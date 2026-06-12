@@ -11,8 +11,9 @@
 </p>
 <p align="center">
   <em>An antenna grows out of uniform gray. 200 Adam iterations through a differentiable
-  Maxwell solver, maximizing radiated power at 2.45 GHz — the objective ends up
-  <strong>63,000×</strong> above the starting design. No geometry was drawn by hand.</em>
+  Maxwell solver on a 104×104-pixel design region (1 mm cells), maximizing radiated power
+  at 2.45 GHz — the objective ends up <strong>58,000×</strong> above the starting design.
+  No geometry was drawn by hand.</em>
 </p>
 
 gradenna is a fully differentiable electromagnetic (FDTD) solver and topology-optimization toolkit for RF / microwave antenna design. The entire simulation — Yee update, CPML absorbing boundaries, lumped 50 Ω ports, running-DFT S-parameters, near-to-far-field transform — is a single JAX computation graph, so `jax.grad` gives you the exact adjoint gradient of any objective (S11, radiated power, directivity, gain) with respect to **every pixel of the design at once**:
@@ -53,15 +54,17 @@ pre-generated and committed: `cd web/app && npm install && npm run dev`.
     </td>
     <td width="50%">
       <img src="assets/viewer_live_fdtd.png" alt="Live FDTD in the browser"/>
-      <p align="center"><sub><b>Live FDTD</b> — Maxwell stepped in-browser by the wasm kernel:
-      move the source, paint copper, double-slit and parabolic-mirror scenes</sub></p>
+      <p align="center"><sub><b>Live FDTD</b> — the wasm kernel driving the optimized design
+      live; time-averaged intensity reveals its directional beam. Paint copper, move the
+      source, double-slit and mirror scenes</sub></p>
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="assets/viewer_farfield.png" alt="3D far-field directivity lobe"/>
-      <p align="center"><sub><b>Far field</b> — the NTFF directivity lobe of the 2.45 GHz patch,
-      orbitable, with linear/dB scales</sub></p>
+      <img src="assets/viewer_antenna3d.png" alt="Antenna 3D: geometry, near field and far field"/>
+      <p align="center"><sub><b>Antenna 3D</b> — the real patch geometry, the glowing |E| near
+      field of the 3D run on draggable slice planes (fringing fields at the radiating edges),
+      and the far-field lobe above — the whole story in one orbitable scene</sub></p>
     </td>
     <td width="50%">
       <img src="assets/viewer_s11.png" alt="S11 vs openEMS overlay"/>
@@ -126,7 +129,7 @@ Every physics component is tested against analytic solutions, textbook reference
 
 | Script | What it shows |
 |---|---|
-| `examples/optimize_2d_antenna.py` | The hero GIF: radiated-energy maximization at 2.45 GHz, fully binary final design |
+| `examples/optimize_2d_antenna.py` | The growth demo: radiated-energy maximization at 2.45 GHz, fully binary final design (the hero GIF is this problem at 1 mm resolution, via `scripts/export_viz.py`) |
 | `examples/optimize_directivity.py` | Beam shaping through the far-field transform: D(0°) 0.31 → 4.47, front-to-back ratio 16.8 dB |
 | `examples/optimize_multiband.py` | Worst-band (softmin) radiated power across 2.0 + 3.0 GHz simultaneously |
 | `examples/optimize_beamsteering.py` | **Beam steering**: complex feed weights of a 4-element λ/2 array optimized through the far-field transform |

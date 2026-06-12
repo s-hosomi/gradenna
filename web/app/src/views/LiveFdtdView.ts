@@ -1,17 +1,18 @@
 import * as THREE from "three";
-import { fillDivergingRGBA, COPPER, DARK_DIV, lutColor, drawColorbar } from "../colormaps";
-import { Fdtd2DInstance, GradennaWasmModule } from "../types";
-import { T, el, panel, sectionTitle, button, styleButton, statRow, hidpiCtx } from "../ui";
+import { fillDivergingRGBA, COPPER, DARK_DIV, VIRIDIS, lutColor, drawColorbar } from "../colormaps";
+import { Fdtd2DInstance, GradennaWasmModule, OptimizationData } from "../types";
+import { T, el, panel, sectionTitle, button, styleButton, statRow } from "../ui";
 
 const NX = 256;
 const NY = 256;
-const DX_M = 0.002; // 2 mm cells -> 512 x 512 mm domain
+const DX_M = 0.001; // 1 mm cells -> 256 x 256 mm domain, lambda(2.4 GHz) = 125 cells
 const NPML = 10;
 const TWO_PI = 2 * Math.PI;
 const SIGMA_METAL = 1e7;
 
 type Brush = "source" | "draw" | "erase";
 type Excitation = "pulse" | "cw";
+type Display = "ez" | "intensity";
 
 export class LiveFdtdView {
   private container: HTMLElement;
@@ -31,15 +32,23 @@ export class LiveFdtdView {
   private sourceJ = Math.round(NY * 0.3);
   private sigma = new Float32Array(NX * NY);
   private brush: Brush = "source";
-  private brushSize = 4;
+  private brushSize = 5;
   private excitation: Excitation = "cw";
-  private stepsPerFrame = 6;
+  private display: Display = "ez";
+  private stepsPerFrame = 8;
   private ezAmplitude = 1e-6;
   private dragging = false;
+  // time-averaged |Ez|^2 (the "exposure" picture: interference fringes,
+  // radiation patterns) accumulated since the last restart
+  private intensity = new Float32Array(NX * NY);
+  private optData: OptimizationData | null = null;
 
-  private readonly FC = 2.4e9;
+  // excitation frequency is per-scene: the double-slit needs a shorter
+  // wavelength than the antenna scenes to fit fringes in a 256 mm domain
+  private fc = 2.4e9;
   private readonly BW = 1.2e9;
   private dt = 0;
+  private onFreqChange: (() => void) | null = null;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -80,6 +89,12 @@ export class LiveFdtdView {
       return;
     }
 
+    // the optimized design for the "Antenna" scene (optional, never fatal)
+    try {
+      const r = await fetch("./data/optimization.json");
+      if (r.ok) this.optData = (await r.json()) as OptimizationData;
+    } catch { /* scene button will report */ }
+
     // --- layout --------------------------------------------------------------
     const row = el("div", "display:flex;gap:14px;flex:1;min-height:0;");
     c.appendChild(row);
@@ -97,19 +112,17 @@ export class LiveFdtdView {
     );
     row.appendChild(side);
 
-    // tool buttons
+    const caption = (text: string) =>
+      el("div", `color:${T.faint};font-size:0.7rem;font-family:${T.sans};text-transform:uppercase;letter-spacing:0.08em;`, text);
+
+    // tools
     const toolPanel = panel("padding:10px 12px;display:flex;flex-direction:column;gap:6px;");
     side.appendChild(toolPanel);
-    toolPanel.appendChild(el("div", `color:${T.faint};font-size:0.7rem;font-family:${T.sans};text-transform:uppercase;letter-spacing:0.08em;`, "tool"));
+    toolPanel.appendChild(caption("tool"));
     const toolRow = el("div", "display:flex;gap:6px;flex-wrap:wrap;");
     toolPanel.appendChild(toolRow);
-    const tools: [Brush, string][] = [
-      ["source", "⊕ Source"],
-      ["draw", "✏ Copper"],
-      ["erase", "⌫ Erase"],
-    ];
     const toolBtns = new Map<Brush, HTMLButtonElement>();
-    for (const [mode, label] of tools) {
+    for (const [mode, label] of [["source", "⊕ Source"], ["draw", "✏ Copper"], ["erase", "⌫ Erase"]] as [Brush, string][]) {
       const b = button(label, { active: mode === this.brush });
       b.addEventListener("click", () => {
         this.brush = mode;
@@ -125,7 +138,7 @@ export class LiveFdtdView {
     const brushSlider = el("input") as HTMLInputElement;
     brushSlider.type = "range";
     brushSlider.min = "2";
-    brushSlider.max = "12";
+    brushSlider.max = "16";
     brushSlider.value = String(this.brushSize);
     brushSlider.style.cssText = `flex:1;accent-color:${T.copper};height:4px;`;
     brushSlider.addEventListener("input", () => (this.brushSize = parseInt(brushSlider.value, 10)));
@@ -134,7 +147,7 @@ export class LiveFdtdView {
     // excitation
     const excPanel = panel("padding:10px 12px;display:flex;flex-direction:column;gap:6px;");
     side.appendChild(excPanel);
-    excPanel.appendChild(el("div", `color:${T.faint};font-size:0.7rem;font-family:${T.sans};text-transform:uppercase;letter-spacing:0.08em;`, "excitation · 2.4 GHz"));
+    excPanel.appendChild(caption("excitation"));
     const excRow = el("div", "display:flex;gap:6px;");
     excPanel.appendChild(excRow);
     const excBtns = new Map<Excitation, HTMLButtonElement>();
@@ -154,59 +167,105 @@ export class LiveFdtdView {
     const speedSlider = el("input") as HTMLInputElement;
     speedSlider.type = "range";
     speedSlider.min = "1";
-    speedSlider.max = "14";
+    speedSlider.max = "16";
     speedSlider.value = String(this.stepsPerFrame);
     speedSlider.style.cssText = `flex:1;accent-color:${T.accent};height:4px;`;
     speedSlider.addEventListener("input", () => (this.stepsPerFrame = parseInt(speedSlider.value, 10)));
     speedRow.appendChild(speedSlider);
 
-    // scenes (presets)
+    // display mode
+    const dispPanel = panel("padding:10px 12px;display:flex;flex-direction:column;gap:6px;");
+    side.appendChild(dispPanel);
+    dispPanel.appendChild(caption("display"));
+    const dispRow = el("div", "display:flex;gap:6px;");
+    dispPanel.appendChild(dispRow);
+    const dispBtns = new Map<Display, HTMLButtonElement>();
+
+    // colorbar (declared early so the display toggle can redraw it)
+    const bar = el("canvas", "width:52px;height:120px;flex-shrink:0;") as HTMLCanvasElement;
+    const drawBar = () => {
+      if (this.display === "ez") {
+        drawColorbar(bar, DARK_DIV, [
+          { t: 0, label: "−" },
+          { t: 0.5, label: "0" },
+          { t: 1, label: "+" },
+        ], "Ez");
+      } else {
+        drawColorbar(bar, VIRIDIS, [
+          { t: 0, label: "0" },
+          { t: 1, label: "max" },
+        ], "⟨Ez²⟩");
+      }
+    };
+    for (const [mode, label] of [["ez", "Ez field"], ["intensity", "Intensity"]] as [Display, string][]) {
+      const b = button(label, { active: mode === this.display });
+      b.addEventListener("click", () => {
+        this.display = mode;
+        if (mode === "intensity") this.intensity.fill(0); // fresh exposure
+        dispBtns.forEach((bb, m) => styleButton(bb, { active: m === mode }));
+        drawBar();
+      });
+      dispBtns.set(mode, b);
+      dispRow.appendChild(b);
+    }
+    dispPanel.appendChild(
+      el("div", `color:${T.faint};font-size:0.7rem;font-family:${T.sans};line-height:1.5;`,
+        "Intensity = time-averaged Ez² — fringes and patterns emerge")
+    );
+
+    // scenes
     const scenePanel = panel("padding:10px 12px;display:flex;flex-direction:column;gap:6px;");
     side.appendChild(scenePanel);
-    scenePanel.appendChild(el("div", `color:${T.faint};font-size:0.7rem;font-family:${T.sans};text-transform:uppercase;letter-spacing:0.08em;`, "scenes"));
+    scenePanel.appendChild(caption("scenes"));
     const sceneRow = el("div", "display:flex;gap:6px;flex-wrap:wrap;");
     scenePanel.appendChild(sceneRow);
+    const antBtn = button("Antenna");
     const slitBtn = button("Double slit");
     const mirrorBtn = button("Mirror");
     const clearBtn = button("Clear");
-    sceneRow.append(slitBtn, mirrorBtn, clearBtn);
+    sceneRow.append(antBtn, slitBtn, mirrorBtn, clearBtn);
+    antBtn.addEventListener("click", () => this.presetAntenna());
     slitBtn.addEventListener("click", () => this.presetDoubleSlit());
     mirrorBtn.addEventListener("click", () => this.presetMirror());
     clearBtn.addEventListener("click", () => this.clearAll());
+    if (!this.optData) {
+      antBtn.disabled = true;
+      antBtn.style.opacity = "0.4";
+      antBtn.title = "needs data/optimization.json";
+    } else {
+      antBtn.title = "load the optimized design from the Optimization tab";
+    }
 
-    // readouts + colorbar
     const hud = panel("padding:10px 12px;display:flex;gap:12px;");
     side.appendChild(hud);
-    const bar = el("canvas", "width:52px;height:120px;flex-shrink:0;") as HTMLCanvasElement;
     hud.appendChild(bar);
     const stats = el("div", "flex:1;display:flex;flex-direction:column;justify-content:center;gap:2px;");
     hud.appendChild(stats);
+    const sFreq = statRow("f");
     const sTime = statRow("t");
     const sStep = statRow("step");
     const sGrid = statRow("grid");
     const sCell = statRow("cell");
-    for (const s of [sTime, sStep, sGrid, sCell]) stats.appendChild(s.row);
+    for (const s of [sFreq, sTime, sStep, sGrid, sCell]) stats.appendChild(s.row);
+    const showFreq = () => (sFreq.value.textContent = `${(this.fc / 1e9).toFixed(1)} GHz`);
+    showFreq();
+    this.onFreqChange = showFreq;
     sGrid.value.textContent = `${NX}×${NY}`;
     sCell.value.textContent = `${DX_M * 1e3} mm`;
-    drawColorbar(bar, DARK_DIV, [
-      { t: 0, label: "−" },
-      { t: 0.5, label: "0" },
-      { t: 1, label: "+" },
-    ], "Ez");
+    drawBar();
 
     const hint = el(
       "div",
       `color:${T.faint};font-size:0.72rem;line-height:1.7;font-family:${T.sans};padding:0 2px;`
     );
     hint.innerHTML =
-      "Click to move the source.<br>Paint copper to reflect and<br>diffract the wave; the dark<br>frame is the absorbing CPML.";
+      "Click to move the source, paint<br>copper to reflect and diffract.<br>Try <b>Antenna</b> + <b>Intensity</b>: the<br>optimized design radiating live.";
     side.appendChild(hint);
 
-    // --- texture / scene ------------------------------------------------------
+    // --- texture / scene -------------------------------------------------------
     this.texture = new THREE.DataTexture(this.rgba, NY, NX, THREE.RGBAFormat);
     this.texture.flipY = false;
-    // The RGBA bytes are authored in sRGB; declaring that makes the
-    // decode/encode round-trip an identity, so the dark background stays dark.
+    // sRGB-authored bytes; declaring it keeps the dark background dark
     this.texture.colorSpace = THREE.SRGBColorSpace;
     const mesh = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
@@ -214,7 +273,7 @@ export class LiveFdtdView {
     );
     this.scene.add(mesh);
 
-    // --- pointer interaction ---------------------------------------------------
+    // --- pointer interaction ------------------------------------------------------
     const gridCoords = (e: PointerEvent): [number, number] => {
       const rect = fieldPanel.getBoundingClientRect();
       const v = (e.clientY - rect.top) / rect.height;
@@ -226,6 +285,7 @@ export class LiveFdtdView {
       if (this.brush === "source") {
         this.sourceI = Math.max(NPML + 2, Math.min(NX - NPML - 3, gi));
         this.sourceJ = Math.max(NPML + 2, Math.min(NY - NPML - 3, gj));
+        this.intensity.fill(0);
       } else {
         this.paint(gi, gj, this.brushSize, this.brush === "draw" ? SIGMA_METAL : 0);
       }
@@ -254,7 +314,7 @@ export class LiveFdtdView {
     });
     this.ro.observe(fieldPanel);
 
-    // --- main loop ---------------------------------------------------------------
+    // --- main loop -------------------------------------------------------------------
     const animate = () => {
       this.rafId = requestAnimationFrame(animate);
       const f = this.fdtd!;
@@ -273,23 +333,46 @@ export class LiveFdtdView {
         ez = new Float32Array(NX * NY);
       }
 
-      // amplitude tracking (interior only, so the source spike doesn't blow
-      // out the colormap)
       let maxAbs = 0;
       for (let k = 0; k < ez.length; k++) {
         const a = Math.abs(ez[k]);
         if (a > maxAbs) maxAbs = a;
+        this.intensity[k] += ez[k] * ez[k];
       }
       this.ezAmplitude = maxAbs > this.ezAmplitude
         ? this.ezAmplitude * 0.7 + maxAbs * 0.3
         : this.ezAmplitude * 0.985 + maxAbs * 0.015;
 
-      fillDivergingRGBA(this.rgba, ez, NX * NY, Math.max(this.ezAmplitude, 1e-9), DARK_DIV, 0.45);
+      if (this.display === "ez") {
+        fillDivergingRGBA(this.rgba, ez, NX * NY, Math.max(this.ezAmplitude, 1e-9), DARK_DIV, 0.45);
+      } else {
+        this.fillIntensity();
+      }
       this.compositeOverlays();
       this.texture!.needsUpdate = true;
       this.renderer.render(this.scene, this.camera);
     };
     animate();
+  }
+
+  /** Time-averaged Ez² with a sqrt tone curve (≈|E| amplitude) in viridis. */
+  private fillIntensity(): void {
+    let max = 0;
+    for (let k = 0; k < this.intensity.length; k++) {
+      if (this.intensity[k] > max) max = this.intensity[k];
+    }
+    const inv = max > 0 ? 1 / max : 0;
+    // gain x2.6: the source cell dominates the max, so an unscaled sqrt would
+    // leave the radiated pattern in the bottom of the colormap
+    for (let k = 0; k < this.intensity.length; k++) {
+      const t = 2.6 * Math.sqrt(this.intensity[k] * inv);
+      const idx = Math.round(Math.min(1, t) * 255) * 3;
+      const p = k * 4;
+      this.rgba[p] = VIRIDIS[idx];
+      this.rgba[p + 1] = VIRIDIS[idx + 1];
+      this.rgba[p + 2] = VIRIDIS[idx + 2];
+      this.rgba[p + 3] = 255;
+    }
   }
 
   /** Copper cells, CPML shading and the source marker, drawn over the field. */
@@ -302,7 +385,6 @@ export class LiveFdtdView {
         const k = i * NY + j;
         const p = k * 4;
         if (this.sigma[k] > 0) {
-          // copper with a subtle edge highlight
           const edge =
             (i > 0 && this.sigma[k - NY] === 0) ||
             (i < NX - 1 && this.sigma[k + NY] === 0) ||
@@ -318,7 +400,6 @@ export class LiveFdtdView {
         }
       }
     }
-    // source marker: thin ring
     const R = 5;
     for (let a = 0; a < 64; a++) {
       const ang = (a / 64) * TWO_PI;
@@ -334,13 +415,13 @@ export class LiveFdtdView {
 
   private sourceValue(t: number): number {
     if (this.excitation === "cw") {
-      const ramp = Math.min(1, t / (4 / this.FC + 1e-30));
-      return ramp * Math.sin(TWO_PI * this.FC * t);
+      const ramp = Math.min(1, t / (4 / this.fc + 1e-30));
+      return ramp * Math.sin(TWO_PI * this.fc * t);
     }
     const tau = 1 / (TWO_PI * this.BW);
     const t0 = 4 * tau * TWO_PI;
     const env = Math.exp(-((t - t0) ** 2) / (2 * tau * tau));
-    return env * Math.sin(TWO_PI * this.FC * t);
+    return env * Math.sin(TWO_PI * this.fc * t);
   }
 
   private paint(ci: number, cj: number, radius: number, value: number): void {
@@ -356,16 +437,61 @@ export class LiveFdtdView {
     this.fdtd?.set_sigma(this.sigma);
   }
 
+  /** The optimized design from the Optimization tab, radiating live. */
+  private presetAntenna(): void {
+    if (!this.optData) return;
+    const d = this.optData;
+    this.sigma.fill(0);
+    const frame = d.frames[d.frames.length - 1];
+    // honour the design's physical cell size: the optimization may have been
+    // run at a different resolution than this view's 1 mm cells
+    const designDxMm = d.extent_mm[0] / d.nx;
+    const scale = designDxMm / (DX_M * 1e3);
+    const sx = Math.round(d.nx * scale);
+    const sy = Math.round(d.ny * scale);
+    const oi = Math.round((NX - sx) / 2);
+    const oj = Math.round((NY - sy) / 2);
+    for (let i = 0; i < sx; i++) {
+      const di = Math.min(d.nx - 1, Math.floor(i / scale));
+      for (let j = 0; j < sy; j++) {
+        const dj = Math.min(d.ny - 1, Math.floor(j / scale));
+        const gi = oi + i;
+        const gj = oj + j;
+        if (gi < NPML || gi >= NX - NPML || gj < NPML || gj >= NY - NPML) continue;
+        if (frame[di * d.ny + dj] > 0.5) this.sigma[gi * NY + gj] = SIGMA_METAL;
+      }
+    }
+    // feed location: exported with the data when available, else the
+    // canonical problem's feed (row-centre, ~1/5 in from the low-j edge)
+    const fc = (d as unknown as { feed_cell?: [number, number] }).feed_cell;
+    const [fi, fj] = fc ?? [Math.round(d.nx / 2), Math.round(d.ny / 5)];
+    this.sourceI = Math.max(NPML + 2, Math.min(NX - NPML - 3, oi + Math.round(fi * scale)));
+    this.sourceJ = Math.max(NPML + 2, Math.min(NY - NPML - 3, oj + Math.round(fj * scale)));
+    // keep the feed cell itself non-metal (it is masked in the optimization)
+    this.sigma[this.sourceI * NY + this.sourceJ] = 0;
+    this.excitation = "cw";
+    this.setFreq(2.4e9);
+    this.fdtd?.set_sigma(this.sigma);
+    this.restart();
+  }
+
+  private setFreq(f: number): void {
+    this.fc = f;
+    this.onFreqChange?.();
+  }
+
   private presetDoubleSlit(): void {
     this.clearAll();
-    const wallJ = Math.round(NY * 0.55);
+    // 4.8 GHz here: lambda = 62 cells, so several fringes fit behind the wall
+    this.setFreq(4.8e9);
+    const wallJ = Math.round(NY * 0.5);
     const slitHalf = 8;
-    const sep = 36;
+    const sep = 56;
     const c1 = Math.round(NX / 2 - sep / 2);
     const c2 = Math.round(NX / 2 + sep / 2);
     for (let i = NPML; i < NX - NPML; i++) {
       if (Math.abs(i - c1) <= slitHalf || Math.abs(i - c2) <= slitHalf) continue;
-      for (let w = 0; w < 3; w++) this.sigma[i * NY + wallJ + w] = SIGMA_METAL;
+      for (let w = 0; w < 4; w++) this.sigma[i * NY + wallJ + w] = SIGMA_METAL;
     }
     this.sourceI = Math.round(NX / 2);
     this.sourceJ = Math.round(NY * 0.25);
@@ -375,17 +501,17 @@ export class LiveFdtdView {
 
   private presetMirror(): void {
     this.clearAll();
-    // parabola opening toward +j with focus near the source
+    this.setFreq(2.4e9);
     const focusI = Math.round(NX / 2);
-    const vertexJ = Math.round(NY * 0.22);
-    const F = 30; // focal length in cells
+    const vertexJ = Math.round(NY * 0.18);
+    const F = 55; // focal length in cells
     this.sourceI = focusI;
     this.sourceJ = vertexJ + F;
     for (let i = NPML; i < NX - NPML; i++) {
       const di = i - focusI;
       const j = Math.round(vertexJ + (di * di) / (4 * F));
       if (j < NPML || j >= NY - NPML) continue;
-      for (let w = 0; w < 3; w++) {
+      for (let w = 0; w < 4; w++) {
         const jj = j - w;
         if (jj >= NPML) this.sigma[i * NY + jj] = SIGMA_METAL;
       }
@@ -396,6 +522,7 @@ export class LiveFdtdView {
 
   private clearAll(): void {
     this.sigma.fill(0);
+    this.setFreq(2.4e9);
     this.fdtd?.set_sigma(this.sigma);
     this.restart();
   }
@@ -405,6 +532,7 @@ export class LiveFdtdView {
     this.time = 0;
     this.stepCount = 0;
     this.ezAmplitude = 1e-6;
+    this.intensity.fill(0);
   }
 
   dispose(): void {
