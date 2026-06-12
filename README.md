@@ -37,6 +37,7 @@ grad = jax.grad(neg_radiated_power)(0.5 * jnp.ones((52, 52)))  # one backward pa
 - **Topology optimization toolkit**: conic density filter, tanh projection with β continuation, log-conductivity metal interpolation, connectivity and minimum-feature-size checks
 - **Fabrication pipeline**: density map → polygons → RS-274X Gerber with JLCPCB design-rule checks (`pip install gradenna[fab]`)
 - **Measurement loop**: Touchstone I/O, simulated-vs-measured S11 comparison, NanoVNA capture script (`pip install gradenna[measure]`)
+- **Differentiable thin-wire MoM backend** (`gradenna.mom`): piecewise-sinusoidal Galerkin EFIE for free-space PEC wires — a fast surrogate with `jax.grad` through geometry (length/radius); layered-media Green's functions for substrates are future work
 
 ## Validation
 
@@ -51,6 +52,7 @@ Every physics component is tested against analytic solutions and textbook refere
 | Dipole directivity via NTFF vs D₀ = 1.5 | 0.14% |
 | 2.45 GHz FR-4 patch resonance vs Balanis design equations | −2.5% |
 | 2.45 GHz patch vs openEMS (committed reference data) | resonance 0.83%, \|S11\| RMS 0.51 dB, pattern corr ≥ 0.999 |
+| Thin-wire MoM dipole resonance vs textbook (0.47–0.48 λ, ~72 Ω) | L_res = 0.476 λ, Re Zin = 71.7 Ω |
 | `jax.grad` vs finite differences (all parameter classes) | ≤ 1e-4 relative |
 | Checkpointed vs plain adjoint | bit-identical outputs |
 
@@ -61,6 +63,7 @@ Every physics component is tested against analytic solutions and textbook refere
 | `examples/optimize_2d_antenna.py` | An antenna grows from uniform gray: radiated-energy maximization at 2.45 GHz, 4× over an empty-box baseline, fully binary final design |
 | `examples/optimize_directivity.py` | Beam shaping through the far-field transform: D(0°) 0.31 → 4.47, front-to-back ratio 16.8 dB |
 | `examples/optimize_multiband.py` | Worst-band (softmin) radiated power across 2.0 + 3.0 GHz simultaneously |
+| `examples/optimize_beamsteering.py` | **Beam steering**: complex feed weights of a 4-element λ/2 array optimized through the far-field transform; the beam lands within the angular resolution of ±30° targets |
 | `examples/optimize_3d_patch.py` | **3D topology optimization**: copper density on a real FR-4 patch stackup, checkpointed adjoint; `--preset cpu-demo` (39× radiated power in ~2.5 min) or `--preset gpu-24gb` |
 | `examples/patch_to_gerber.py` | Balanis patch design → density map → DRC checks → Gerber |
 
@@ -98,6 +101,7 @@ A 50×50 design region has 2500 degrees of freedom. Gradient-free methods (GA, p
 - [x] Frequency-domain adjoint (gradient = two forward runs, no time tape) and fused Rust CPU kernels, both in 2D and 3D
 - [x] Design-region-limited DFT monitors (unlocks kernel speedup for DFT-heavy 3D gradients)
 - [x] openEMS cross-check reference data (committed CSVs, compared in CI)
+- [x] Phase 5 extensions — array beam-steering demo, differentiable thin-wire MoM backend (free space)
 - [ ] PCB fabrication + NanoVNA measurement campaign — ready-to-order Gerber/drill package and runbook in `fab_campaign/` (probe-fed benchmark patch, JLCPCB DRC clean); physical ordering + measurement pending
 
 ## License
