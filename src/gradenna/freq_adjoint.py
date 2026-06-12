@@ -140,11 +140,15 @@ __all__ = [
 
 #: Universal Yee transpose constant coupling a magnetic-current (H) cotangent
 #: into the adjoint Ez running-DFT phasor used by the gradient contraction.
-#: Fitted once (dx- and frequency-independent, verified across several grids
-#: and bands) so that the Poynting-flux gradient matches ``jax.grad`` with
-#: ``cos = 1`` and unit scale; applied on the *unit-additive* H injection
-#: basis ``M = a/(-dt/mu0)``.
-Q_MAG = -7.025e-06
+#: Closed form Q_MAG = -eps0/mu0 = -1/eta0^2 (the negative squared
+#: free-space admittance): on the unweighted Euclidean inner product that
+#: reverse-mode AD uses, this is the Yee symplectic metric ratio that
+#: converts an H-array adjoint into an E-array adjoint (strip mu0, apply
+#: eps0). Derived and verified grid-/Courant-/frequency-independent in
+#: docs/research/16 (the earlier empirical fit -7.025e-6 was a slightly
+#: biased estimate of the same constant); applied on the *unit-additive*
+#: H injection basis ``M = a/(-dt/mu0)``.
+Q_MAG = -EPS0 / MU0
 
 
 class FreqPhasors(NamedTuple):
