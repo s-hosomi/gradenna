@@ -48,13 +48,18 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-def _conic_kernel(radius_cells: float) -> np.ndarray:
-    """Normalized conic (hat) kernel w(d) = max(0, 1 - d/R) on the cell grid."""
+def _conic_kernel(radius_cells: float, ndim: int = 2) -> np.ndarray:
+    """Normalized conic (hat) kernel w(d) = max(0, 1 - d/R) on the cell grid.
+
+    Built for any number of dimensions (1D/2D/3D, ...): the kernel is the
+    radially symmetric hat function sampled on the integer lattice.
+    """
     radius = float(radius_cells)
     # Largest integer offset with strictly positive weight (d < R).
     n = int(np.ceil(radius)) - 1
-    y, x = np.mgrid[-n : n + 1, -n : n + 1]
-    w = np.maximum(0.0, 1.0 - np.sqrt(x * x + y * y) / radius)
+    offsets = np.meshgrid(*([np.arange(-n, n + 1)] * ndim), indexing="ij")
+    d2 = sum(o.astype(np.float64) ** 2 for o in offsets)
+    w = np.maximum(0.0, 1.0 - np.sqrt(d2) / radius)
     return w / w.sum()
 
 
@@ -68,7 +73,8 @@ def conic_filter(rho: jax.Array, radius_cells: float) -> jax.Array:
     away from the boundary.
 
     Args:
-        rho: 2D density field.
+        rho: density field of any dimensionality (the conic kernel is built
+            with ``rho.ndim`` axes, so 2D and 3D design regions both work).
         radius_cells: filter radius R in units of grid cells (static Python
             number). ``R <= 1`` makes the kernel a single cell, i.e. identity.
 
@@ -79,7 +85,7 @@ def conic_filter(rho: jax.Array, radius_cells: float) -> jax.Array:
     if radius <= 1.0:
         # Kernel support is a single cell: the filter is the identity.
         return rho
-    kernel = jnp.asarray(_conic_kernel(radius), dtype=rho.dtype)
+    kernel = jnp.asarray(_conic_kernel(radius, rho.ndim), dtype=rho.dtype)
     num = fftconvolve(rho, kernel, mode="same")
     den = fftconvolve(jnp.ones_like(rho), kernel, mode="same")
     return num / den
