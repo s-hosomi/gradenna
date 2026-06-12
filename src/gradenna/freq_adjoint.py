@@ -672,6 +672,7 @@ def simulate_3d_freq(
     port_resistance: float = 50.0,
     cpml: CPMLSpec = CPMLSpec(),
     checkpoint_segments: int | None = None,
+    dft_regions=None,
 ) -> FreqPhasors3D:
     """3D forward run returning frequency-domain phasors (see :class:`FreqPhasors3D`).
 
@@ -683,6 +684,12 @@ def simulate_3d_freq(
     function is itself differentiable through :func:`gradenna.simulate_3d`
     (all-AD); use :func:`freq_adjoint_gradient_3d` for the memory-bounded
     adjoint gradient.
+
+    ``dft_regions`` (optional :class:`gradenna.dft_region.DFTRegions`) limits
+    the running DFT to per-component slabs; the result is still a full-grid
+    :class:`FreqPhasors3D` (the slabs are zero-filled back onto the grid via
+    :func:`gradenna.dft_region.scatter_full`), so the public contract is
+    unchanged -- only the simulation's DFT carry shrinks.
     """
     eps_r, sigma = _full_eps_sigma_3d(grid, design_sigma, design_eps_r, design_region)
     res = simulate_3d(
@@ -696,10 +703,15 @@ def simulate_3d_freq(
         port_resistance=port_resistance,
         dft_freqs=dft_freqs,
         dft_dtype=jnp.complex128,
+        dft_regions=dft_regions,
         cpml=cpml,
         checkpoint_segments=checkpoint_segments,
     )
     d = res.dft
+    if dft_regions is not None:
+        from gradenna.dft_region import full_field_shapes, scatter_full
+
+        d = scatter_full(d, full_field_shapes(grid.nx, grid.ny, grid.nz))
     port_v = port_i = None
     if res.port_v is not None:
         port_v, port_i = port_dft_3d(res.port_v, res.port_i, grid.dt, dft_freqs)
@@ -837,8 +849,13 @@ def _forward_solver_3d(backend: str):
     if use_native:
         from gradenna import native3d
 
-        def solve(grid, *, dft_dtype=None, checkpoint_segments=None, **kw):
+        def solve(grid, *, dft_dtype=None, checkpoint_segments=None, dft_regions=None, **kw):
             # f64 fields + f64 DFT accumulators == dft_dtype=complex128.
+            if dft_regions is not None:
+                raise NotImplementedError(
+                    "region-limited DFT (dft_regions) is not yet implemented for the "
+                    "native Rust 3D backend; use backend='xla'"
+                )
             return native3d.simulate_3d_native(grid, dtype="float64", **kw)
 
         return solve
@@ -865,6 +882,9 @@ def freq_adjoint_gradient_3d(
     port_resistance: float = 50.0,
     cpml: CPMLSpec = CPMLSpec(),
     backend: str = "xla",
+    objective_kind: str | None = None,
+    box_margin: int | None = None,
+    monitor_region=None,
 ):
     r"""Memory-bounded 3D frequency-domain adjoint gradient of ``objective``.
 
@@ -874,6 +894,24 @@ def freq_adjoint_gradient_3d(
     maps a :class:`FreqPhasors3D` to a real scalar (a field flux, a port
     S-parameter, or any ``loss(ntff_3d(...))`` -- JAX backpropagates the NTFF
     einsum to the six DFT cotangents automatically).
+
+    ``objective_kind`` (optional) additionally limits the running DFT to the
+    design region plus the region the objective reads, shrinking the
+    *simulation* DFT carry (the gradient is otherwise unchanged -- bit-identical
+    to ``objective_kind=None`` on the same backend). It names the objective's
+    monitor region so the right slabs can be derived:
+
+    * ``"port"`` -- the lumped RVS port at ``port_ijk`` (``_port_v_i_3d`` cells);
+    * ``"ntff_box"`` -- the NTFF box at ``box_margin`` cells from the boundary
+      (requires ``box_margin``; covers every :func:`gradenna.ntff.ntff_3d`
+      read);
+    * ``"field"`` -- a cell-slice field region (requires ``monitor_region``,
+      the same three-slice convention as ``design_region``).
+
+    The forward DFT is recorded on ``union(design E3, objective region)`` and
+    the adjoint DFT on the design E3 region only; both are zero-filled back to
+    the full grid before the objective AD / contraction, so the result matches
+    the full-grid path.
 
     The contraction sums three per-component terms (note 16 Sec. 2.2),
 
@@ -909,6 +947,45 @@ def freq_adjoint_gradient_3d(
         cpml=cpml,
     )
 
+    # ---- region-limited DFT slabs (optional, memory-bounding) ---------------
+    # forward DFT on union(design E3, objective region); adjoint DFT on design
+    # E3 only. Both are zero-filled back to the full grid before the objective
+    # AD and the contraction, so the result is bit-identical to the full-grid
+    # path -- only the simulation's DFT carry/tape shrinks.
+    fwd_regions = adj_regions = None
+    full_shapes = None
+    if objective_kind is not None:
+        from gradenna import dft_region as _dr
+
+        full_shapes = _dr.full_field_shapes(grid.nx, grid.ny, grid.nz)
+        adj_regions = _dr.design_region_to_slabs(design_region, full_shapes)
+        if objective_kind == "port":
+            if port_ijk is None:
+                raise ValueError("objective_kind='port' requires port_ijk")
+            obj_regions = _dr.port_regions(port_ijk, full_shapes)
+        elif objective_kind == "ntff_box":
+            if box_margin is None:
+                raise ValueError("objective_kind='ntff_box' requires box_margin")
+            obj_regions = _dr.ntff_box_regions(grid, box_margin, full_shapes)
+        elif objective_kind == "field":
+            if monitor_region is None:
+                raise ValueError("objective_kind='field' requires monitor_region")
+            obj_regions = _dr.field_regions(monitor_region, full_shapes)
+        else:
+            raise ValueError(
+                f"objective_kind must be 'port', 'ntff_box' or 'field', "
+                f"got {objective_kind!r}"
+            )
+        fwd_regions = _dr.union_regions(adj_regions, obj_regions)
+
+    def _scatter(res):
+        """Zero-fill a region-limited DFT result back onto the full grid."""
+        if fwd_regions is None:
+            return res.dft
+        from gradenna.dft_region import scatter_full
+
+        return scatter_full(res.dft, full_shapes)
+
     # ---- forward run --------------------------------------------------------
     fwd = forward(
         grid,
@@ -917,9 +994,10 @@ def freq_adjoint_gradient_3d(
         port_ijk=port_ijk,
         port_voltage=port_voltage,
         port_resistance=port_resistance,
+        dft_regions=fwd_regions,
         **common,
     )
-    fd = fwd.dft
+    fd = _scatter(fwd)
 
     # ---- objective cotangents (cheap post-processing AD) --------------------
     pijk = None if port_ijk is None else tuple(int(v) for v in np.asarray(port_ijk).reshape(3))
@@ -950,8 +1028,8 @@ def freq_adjoint_gradient_3d(
         src_kw["my_ijk"], src_kw["my_current"] = chans["my"]
     if "mz" in chans:
         src_kw["mz_ijk"], src_kw["mz_current"] = chans["mz"]
-    adj = forward(grid, **src_kw, **common)
-    ad = adj.dft
+    adj = forward(grid, dft_regions=adj_regions, **src_kw, **common)
+    ad = _scatter(adj)
 
     # ---- gradient contraction on the design region (3 E components) ---------
     n_eff = float(jnp.sum(env**2))

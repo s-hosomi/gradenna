@@ -8,6 +8,15 @@ Submodules with optional heavy dependencies are not imported here:
 from gradenna.constants import C0, EPS0, ETA0, MU0
 from gradenna.cpml import CPMLSpec, alpha_max_for_fmin
 from gradenna.designs import patch_design
+from gradenna.dft_region import (
+    DFTRegions,
+    FieldSlab,
+    RegionDFTMonitor,
+    design_region_to_slabs,
+    ntff_box_regions,
+    port_regions,
+    scatter_full,
+)
 from gradenna.estimate import fdtd3d_memory_estimate, fits_gpu, gpu_fit_report
 from gradenna.fdtd2d import Port, SimResult, field_energy, simulate_tm
 from gradenna.freq_adjoint import (
@@ -66,15 +75,19 @@ __all__ = [
     "MU0",
     "BandPulse",
     "CPMLSpec",
+    "DFTRegions",
     "DesignTransform",
+    "FieldSlab",
     "FreqPhasors",
     "FreqPhasors3D",
     "Grid2D",
     "Grid3D",
     "Port",
+    "RegionDFTMonitor",
     "SimResult",
     "SimResult3D",
     "alpha_max_for_fmin",
+    "design_region_to_slabs",
     "beta_schedule",
     "conic_filter",
     "connected_to_seed",
@@ -101,14 +114,17 @@ __all__ = [
     "modulated_gaussian",
     "ntff_2d",
     "ntff_3d",
+    "ntff_box_regions",
     "optimize",
     "patch_design",
     "port_dft",
     "port_impedance",
+    "port_regions",
     "poynting_flux_box_2d",
     "radiated_power_2d",
     "radiated_power_3d",
     "s11_power_wave",
+    "scatter_full",
     "sheet_conductivity",
     "sigma_from_density",
     "simulate_3d",

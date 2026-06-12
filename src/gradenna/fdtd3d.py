@@ -279,6 +279,7 @@ def simulate_3d(
     cpml: CPMLSpec = CPMLSpec(),
     dft_freqs=None,
     dft_dtype=None,
+    dft_regions=None,
     record_energy: bool = False,
     checkpoint_segments: int | None = None,
 ) -> SimResult3D:
@@ -324,6 +325,14 @@ def simulate_3d(
             monitors through strongly attenuating media (see the 2D solver's
             note). Only the DFT carry and the returned spectra change dtype;
             the fields, CPML psi slabs and checkpointing are untouched.
+        dft_regions: optional :class:`gradenna.dft_region.DFTRegions` limiting
+            the running DFT to a static per-component slab (``None`` entries
+            are not accumulated at all, so they never land on the scan carry
+            or the reverse tape). ``None`` (default) records the full grid and
+            returns a :class:`DFTMonitor`; when given, ``SimResult3D.dft`` is a
+            :class:`gradenna.dft_region.RegionDFTMonitor` with the same
+            dt-scale and phase conventions. Memory-bounding hook for the
+            frequency-domain adjoint (:mod:`gradenna.freq_adjoint`).
         record_energy: also record the total field energy at every step.
         checkpoint_segments: split the time loop into K segments and wrap the
             inner scan in `jax.checkpoint` (sqrt-N checkpointing). Must divide
@@ -499,6 +508,15 @@ def simulate_3d(
         c_port = -dt / (port_resistance * eps_p * dx * dy * denom)
 
     has_dft = dft_freqs is not None
+    # Region-limited DFT: each component is accumulated only on a static slab
+    # (or not at all when its slab is None), cutting the carry/tape footprint.
+    has_regions = has_dft and dft_regions is not None
+    region_slabs = None  # six entries: tuple(lo, hi) of Python ints, or None.
+    if has_regions:
+        region_slabs = tuple(
+            None if slab is None else (tuple(slab.lo), tuple(slab.hi))
+            for slab in dft_regions
+        )
     if has_dft:
         freqs = jnp.atleast_1d(jnp.asarray(dft_freqs, dtype))
         if dft_dtype is None:
@@ -597,17 +615,32 @@ def simulate_3d(
 
         dft_acc = state.dft
         if has_dft:
-            d_ex, d_ey, d_ez, d_hx, d_hy, d_hz = dft_acc
             eph = xs["e_phase"][:, None, None, None]
             hph = xs["h_phase"][:, None, None, None]
-            dft_acc = (
-                d_ex + eph * ex[None],
-                d_ey + eph * ey[None],
-                d_ez + eph * ez[None],
-                d_hx + hph * hx[None],
-                d_hy + hph * hy[None],
-                d_hz + hph * hz[None],
-            )
+            if has_regions:
+                # Accumulate each component only on its static slab (None
+                # components carry no array, keeping them off carry/tape).
+                fields = (ex, ey, ez, hx, hy, hz)
+                phases = (eph, eph, eph, hph, hph, hph)
+                new = []
+                for acc, field, ph, sl in zip(dft_acc, fields, phases, region_slabs):
+                    if acc is None:
+                        new.append(None)
+                        continue
+                    (lo0, lo1, lo2), (hi0, hi1, hi2) = sl
+                    patch = field[lo0:hi0, lo1:hi1, lo2:hi2]
+                    new.append(acc + ph * patch[None])
+                dft_acc = tuple(new)
+            else:
+                d_ex, d_ey, d_ez, d_hx, d_hy, d_hz = dft_acc
+                dft_acc = (
+                    d_ex + eph * ex[None],
+                    d_ey + eph * ey[None],
+                    d_ez + eph * ez[None],
+                    d_hx + hph * hx[None],
+                    d_hy + hph * hy[None],
+                    d_hz + hph * hz[None],
+                )
 
         state = _State3D(
             ex, ey, ez, hx, hy, hz,
@@ -629,11 +662,27 @@ def simulate_3d(
     zeros = lambda shape: jnp.zeros(shape, dtype)  # noqa: E731
     dft0 = None
     if has_dft:
-        shapes = (
-            (nx - 1, ny, nz), (nx, ny - 1, nz), (nx, ny, nz - 1),
-            (nx, ny - 1, nz - 1), (nx - 1, ny, nz - 1), (nx - 1, ny - 1, nz),
-        )
-        dft0 = tuple(jnp.zeros((freqs.shape[0],) + s, cdtype) for s in shapes)
+        n_freq = freqs.shape[0]
+        if has_regions:
+            # One zero array per accumulated slab; None components stay None
+            # (no pytree leaf -> never on the scan carry / reverse tape).
+            slab_shapes = []
+            for sl in region_slabs:
+                if sl is None:
+                    slab_shapes.append(None)
+                else:
+                    (lo0, lo1, lo2), (hi0, hi1, hi2) = sl
+                    slab_shapes.append((hi0 - lo0, hi1 - lo1, hi2 - lo2))
+            dft0 = tuple(
+                None if s is None else jnp.zeros((n_freq,) + s, cdtype)
+                for s in slab_shapes
+            )
+        else:
+            shapes = (
+                (nx - 1, ny, nz), (nx, ny - 1, nz), (nx, ny, nz - 1),
+                (nx, ny - 1, nz - 1), (nx - 1, ny, nz - 1), (nx - 1, ny - 1, nz),
+            )
+            dft0 = tuple(jnp.zeros((n_freq,) + s, cdtype) for s in shapes)
     state0 = _State3D(
         ex=zeros((nx - 1, ny, nz)),
         ey=zeros((nx, ny - 1, nz)),
@@ -681,7 +730,11 @@ def simulate_3d(
         )
 
     dft_out = None
-    if has_dft:
+    if has_regions:
+        from gradenna.dft_region import RegionDFTMonitor
+
+        dft_out = RegionDFTMonitor(freqs, dft_regions, *final.dft)
+    elif has_dft:
         dft_out = DFTMonitor(freqs, *final.dft)
     return SimResult3D(
         probe_ez=outputs["probe"],
