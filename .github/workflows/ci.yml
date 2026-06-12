@@ -37,3 +37,17 @@ jobs:
       - name: Convergence tests (T2, nightly only)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: uv run pytest -m "slow" -q
+
+  import-smoke:
+    # Core install only: catches accidental imports of optional deps
+    # (fab/measure extras) from the package root.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked --no-dev
+      - run: uv run --no-dev python -c "import gradenna; print(len(gradenna.__all__), 'exports')"
