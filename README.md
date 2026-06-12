@@ -60,6 +60,7 @@ Every physics component is tested against analytic solutions and textbook refere
 | `examples/optimize_2d_antenna.py` | An antenna grows from uniform gray: radiated-energy maximization at 2.45 GHz, 4× over an empty-box baseline, fully binary final design |
 | `examples/optimize_directivity.py` | Beam shaping through the far-field transform: D(0°) 0.31 → 4.47, front-to-back ratio 16.8 dB |
 | `examples/optimize_multiband.py` | Worst-band (softmin) radiated power across 2.0 + 3.0 GHz simultaneously |
+| `examples/optimize_3d_patch.py` | **3D topology optimization**: copper density on a real FR-4 patch stackup, checkpointed adjoint; `--preset cpu-demo` (39× radiated power in ~2.5 min) or `--preset gpu-24gb` |
 | `examples/patch_to_gerber.py` | Balanis patch design → density map → DRC checks → Gerber |
 
 ## Quick start
@@ -73,6 +74,12 @@ uv run python examples/optimize_2d_antenna.py
 
 Runs on CPU out of the box (all demos finish in minutes); JAX GPU/TPU backends work unchanged.
 
+## GPU and Apple Silicon
+
+- **Memory-bounded 3D adjoints**: CPML auxiliary fields are stored as PML slabs (−74% ψ memory in 3D) and the time loop supports √N gradient checkpointing, so the full-resolution 3D patch optimization peaks at **7.7 GB (float64) / ~3.9 GB (float32)** — comfortably inside a 24 GB consumer GPU. `gradenna.fdtd3d_memory_estimate` predicts the budget before you launch; the `gpu-24gb` preset of `examples/optimize_3d_patch.py` prints and asserts it.
+- **float32 end to end**: topology optimization runs in plain float32 (complex64 DFT) — the native precision of consumer GPUs. For extreme attenuation between source and monitor, `dft_dtype=jnp.complex128` promotes only the DFT accumulators.
+- **Apple Silicon (ARM Mac)**: tuned and benchmarked on an M-series CPU — 2D **~440 Mcell-steps/s** (float32), 3D ~295. `scripts/benchmark.py` reproduces the numbers on your machine; `gradenna/platform.py` documents the (deliberately minimal) recommended environment and a CUDA preset for cloud GPUs (jax-metal is unmaintained, so CPU is the supported Mac backend).
+
 ## Why differentiable FDTD?
 
 A 50×50 design region has 2500 degrees of freedom. Gradient-free methods (GA, pixel flipping) need thousands of simulations per generation; the adjoint method — which reverse-mode AD performs automatically and exactly for a leapfrog Maxwell solver — gets the full gradient for the cost of about two simulations, regardless of the number of parameters. gradenna applies machinery proven in photonics inverse design to the RF band, where conductor loss, lumped feeds and fabrication constraints change the problem.
@@ -84,8 +91,9 @@ A 50×50 design region has 2500 degrees of freedom. Gradient-free methods (GA, p
 - [x] Phase 3 — 2D topology optimization (density method, β continuation)
 - [x] Phase 4 — 3D core, patch benchmark, Gerber export, measurement tooling
 - [x] Phase 5 — far-field directivity and multiband objectives
+- [x] GPU memory optimization (PML-slab ψ storage, √N checkpointing, float32 objectives), 3D topology optimization
 - [ ] openEMS cross-check reference data, PCB fabrication + NanoVNA measurement campaign
-- [ ] GPU memory optimization (PML-strip ψ storage, design-region DFT adjoints), 3D topology optimization
+- [ ] Design-region-limited DFT monitors and frequency-domain adjoints (further memory headroom)
 
 ## License
 
