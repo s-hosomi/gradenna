@@ -218,7 +218,7 @@ dev = [
 requires-dist = [
     { name = "gerber-writer", marker = "extra == 'fab'", specifier = ">=0.4.3.3" },
     { name = "jax", specifier = ">=0.4.35" },
-    { name = "numpy", specifier = ">=1.26" },
+    { name = "numpy", specifier = ">=2.0" },
     { name = "optax", specifier = ">=0.2.8" },
     { name = "scikit-image", marker = "extra == 'fab'", specifier = ">=0.26.0" },
     { name = "scikit-rf", marker = "extra == 'measure'", specifier = ">=1.12.0" },
