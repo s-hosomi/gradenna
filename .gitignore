@@ -35,3 +35,7 @@ fab_output/
 # ...but the fabrication-campaign deliverables are tracked artifacts
 !fab_campaign/gerber/*.gbr
 !fab_campaign/gerber/*.svg
+
+# ...and so are the README media assets
+!assets/*.png
+!assets/*.gif
