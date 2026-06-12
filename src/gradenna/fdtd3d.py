@@ -397,11 +397,16 @@ def simulate_3d(
             raise ValueError("port_resistance must be positive")
 
     # Resolve the extra current/magnetic-current channels to (idx, waveform).
-    def _setup_channel(idx_in, cur_in, present):
+    def _setup_channel(idx_in, cur_in, present, shape, name):
         nonlocal n_steps
         if not present:
             return np.zeros((0, 3), np.int32), None
         idx = np.asarray(idx_in, np.int32).reshape(-1, 3)
+        hi = np.array([shape[0] - 1, shape[1] - 1, shape[2] - 1])
+        if idx.size and (np.any(idx < 0) or np.any(idx > hi)):
+            raise ValueError(
+                f"{name} {idx.tolist()} outside the {name} grid {tuple(shape)}"
+            )
         cur = jnp.asarray(cur_in)
         if cur.ndim == 1:
             cur = cur[:, None]
@@ -417,11 +422,23 @@ def simulate_3d(
             )
         return idx, cur
 
-    jx_idx, jx_cur = _setup_channel(source_x_ijk, source_x_current, has_jx)
-    jy_idx, jy_cur = _setup_channel(source_y_ijk, source_y_current, has_jy)
-    mx_idx, mx_cur = _setup_channel(mx_ijk, mx_current, has_mx)
-    my_idx, my_cur = _setup_channel(my_ijk, my_current, has_my)
-    mz_idx, mz_cur = _setup_channel(mz_ijk, mz_current, has_mz)
+    # Per-component field shapes the channel indices address: Jx->Ex, Jy->Ey,
+    # Mx->Hx, My->Hy, Mz->Hz (Yee staggering).
+    jx_idx, jx_cur = _setup_channel(
+        source_x_ijk, source_x_current, has_jx, (nx - 1, ny, nz), "source_x_ijk"
+    )
+    jy_idx, jy_cur = _setup_channel(
+        source_y_ijk, source_y_current, has_jy, (nx, ny - 1, nz), "source_y_ijk"
+    )
+    mx_idx, mx_cur = _setup_channel(
+        mx_ijk, mx_current, has_mx, (nx, ny - 1, nz - 1), "mx_ijk"
+    )
+    my_idx, my_cur = _setup_channel(
+        my_ijk, my_current, has_my, (nx - 1, ny, nz - 1), "my_ijk"
+    )
+    mz_idx, mz_cur = _setup_channel(
+        mz_ijk, mz_current, has_mz, (nx - 1, ny - 1, nz), "mz_ijk"
+    )
 
     parts = [eps_r, sigma]
     if has_src:
@@ -518,7 +535,9 @@ def simulate_3d(
             for slab in dft_regions
         )
     if has_dft:
-        freqs = jnp.atleast_1d(jnp.asarray(dft_freqs, dtype))
+        # Stored as float64 regardless of the (possibly float32) field dtype,
+        # so phase-sensitive consumers never inherit a low-precision frequency.
+        freqs = jnp.atleast_1d(jnp.asarray(dft_freqs, jnp.float64))
         if dft_dtype is None:
             cdtype = jnp.result_type(dtype, jnp.complex64)
         else:

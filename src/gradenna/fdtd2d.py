@@ -15,8 +15,8 @@ Update scheme (Schneider, *Understanding the FDTD Method*, Ch. 8/11):
 with Ca = (1 - sigma dt / 2 eps) / (1 + sigma dt / 2 eps) and
 Cb = (dt/eps) / (1 + sigma dt / 2 eps). The outermost Ez ring is PEC.
 
-Lumped RVS ports (docs/research/12-port-s11-theory.md, Sec. 1.3, 2D form)
--------------------------------------------------------------------------
+Lumped RVS ports (2D form)
+--------------------------
 
 The 2D TM system is the dz = DZ = 1 m unit-length slice of a z-invariant 3D
 problem, so the gap voltage is V = -Ez * DZ and a Thevenin branch (source
@@ -323,6 +323,11 @@ def simulate_tm(
         if m_current is None:
             return np.zeros((0, 2), np.int32), jnp.zeros((n_steps, 0), dtype)
         idx = np.asarray(m_ij, np.int32).reshape(-1, 2)
+        hi = np.array([shape[0] - 1, shape[1] - 1])
+        if idx.size and (np.any(idx < 0) or np.any(idx > hi)):
+            raise ValueError(
+                f"{name}_ij {idx.tolist()} outside the {name} grid {tuple(shape)}"
+            )
         mc = jnp.asarray(m_current, dtype)
         if mc.ndim == 1:
             mc = mc[:, None]

@@ -364,13 +364,21 @@ def simulate_tm_native(
     else:
         cb_vs = np.zeros((0,), dtype)
 
-    # Magnetic-current sources.
-    def setup_mag(m_ij, m_current, name):
+    # Magnetic-current sources. ``shape`` is the target H-field grid the indices
+    # address (Hx is (nx, ny-1), Hy is (nx-1, ny)); validate the indices against
+    # it so an out-of-range index raises here rather than indexing out of bounds
+    # in the kernel's hx[idx]/hy[idx] writes (UB). Mirrors ``_index_array``.
+    def setup_mag(m_ij, m_current, name, shape):
         if (m_ij is None) != (m_current is None):
             raise ValueError(f"{name}_ij and {name}_current must be given together")
         if m_current is None:
             return np.zeros((0, 2), np.int32), np.zeros((n_steps, 0), dtype)
         idx = np.asarray(m_ij, np.int32).reshape(-1, 2)
+        hi = np.array([shape[0] - 1, shape[1] - 1])
+        if idx.size and (np.any(idx < 0) or np.any(idx > hi)):
+            raise ValueError(
+                f"{name}_ij {idx.tolist()} outside the {name} field grid {shape}"
+            )
         mc = arr(m_current)
         if mc.ndim == 1:
             mc = mc[:, None]
@@ -380,8 +388,8 @@ def simulate_tm_native(
             raise ValueError(f"{name}_current has {mc.shape[1]} columns for {idx.shape[0]} sources")
         return idx, mc
 
-    mx_idx, mx_cur = setup_mag(mx_ij, mx_current, "mx")
-    my_idx, my_cur = setup_mag(my_ij, my_current, "my")
+    mx_idx, mx_cur = setup_mag(mx_ij, mx_current, "mx", (nx, ny - 1))
+    my_idx, my_cur = setup_mag(my_ij, my_current, "my", (nx - 1, ny))
 
     # DFT exact-phase tables (float64, identical to simulate_tm).
     dft_freqs = tuple(float(f) for f in dft_freqs)
